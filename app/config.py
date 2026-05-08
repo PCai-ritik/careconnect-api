@@ -13,6 +13,16 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     DATABASE_URL: str = ""
 
+    # LiveKit
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+
+    # AI Pipeline
+    DEEPGRAM_API_KEY: str = ""
+    SARVAM_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
+
     model_config = SettingsConfigDict(env_file=dot_env_path)
 
 

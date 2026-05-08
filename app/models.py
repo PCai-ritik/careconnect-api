@@ -1,5 +1,6 @@
 import uuid
 import enum
+from typing import Optional
 from datetime import datetime, date, time
 from sqlalchemy import (
     String, DateTime, Date, Time, Integer, Numeric,
@@ -27,7 +28,7 @@ class AppointmentStatusEnum(str, enum.Enum):
     CONFIRMED = "CONFIRMED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
+    RESCHEDULED = "RESCHEDULED"
 
 
 class AppointmentTypeEnum(str, enum.Enum):
@@ -99,6 +100,7 @@ class User(Base):
     hospital = relationship("Hospital", back_populates="users")
     doctor_profile = relationship("Doctor", back_populates="user", uselist=False)
     caregiver_profile = relationship("Caregiver", back_populates="user", uselist=False)
+    notifications = relationship("Notification", back_populates="user")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -149,6 +151,7 @@ class Doctor(Base):
     # Relationships
     user = relationship("User", back_populates="doctor_profile")
     availability_slots = relationship("DoctorAvailability", back_populates="doctor")
+    patients = relationship("Patient", back_populates="doctor")
     appointments = relationship("Appointment", back_populates="doctor")
     prescriptions = relationship("Prescription", back_populates="doctor")
     earnings = relationship("Transaction", back_populates="doctor")
@@ -187,6 +190,7 @@ class Caregiver(Base):
     )
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     whatsapp_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    avatar_url: Mapped[str] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -210,7 +214,10 @@ class Patient(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     caregiver_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("caregivers.id"), nullable=False
+        ForeignKey("caregivers.id"), nullable=True
+    )
+    doctor_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("doctors.id"), nullable=True
     )
     hospital_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("hospitals.id"), nullable=False
@@ -247,6 +254,7 @@ class Patient(Base):
 
     # Relationships
     caregiver = relationship("Caregiver", back_populates="patients")
+    doctor = relationship("Doctor", back_populates="patients")
     hospital = relationship("Hospital", back_populates="patients")
     appointments = relationship("Appointment", back_populates="patient")
     medical_records = relationship("MedicalRecord", back_populates="patient")
@@ -270,8 +278,8 @@ class Appointment(Base):
     patient_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("patients.id"), nullable=False
     )
-    caregiver_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("caregivers.id"), nullable=False
+    caregiver_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("caregivers.id"), nullable=True
     )
 
     scheduled_time: Mapped[datetime] = mapped_column(
@@ -282,7 +290,7 @@ class Appointment(Base):
         Enum(AppointmentTypeEnum), default=AppointmentTypeEnum.VIDEO
     )
     status: Mapped[AppointmentStatusEnum] = mapped_column(
-        Enum(AppointmentStatusEnum), default=AppointmentStatusEnum.PENDING
+        Enum(AppointmentStatusEnum), default=AppointmentStatusEnum.CONFIRMED
     )
     reason: Mapped[str] = mapped_column(Text, nullable=True)
     meeting_room_id: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -419,6 +427,7 @@ class VideoSession(Base):
     ended_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    actual_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -493,6 +502,8 @@ class PostCallSummary(Base):
     )  # e.g. ["Amoxicillin 500mg (3x daily for 5 days)"]
     follow_up: Mapped[str] = mapped_column(String(255), nullable=True)
     doctor_notes: Mapped[str] = mapped_column(Text, nullable=True)
+    transcript: Mapped[str] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -500,3 +511,56 @@ class PostCallSummary(Base):
 
     # Relationships
     appointment = relationship("Appointment", back_populates="post_call_summary")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# NEW TABLE: NOTIFICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Notification(Base):
+    """User-facing notifications (appointment reminders, system alerts, etc.)."""
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    action_url: Mapped[str] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    user = relationship("User", back_populates="notifications")
+
+# ═══════════════════════════════════════════════════════════════════════
+# NEW TABLE: DOCTOR NOTE
+# ═══════════════════════════════════════════════════════════════════════
+
+class DoctorNote(Base):
+    """
+    Private, real-time notes taken by the doctor during the video consultation.
+    Used as high-priority context for the AI Post-Call Summary.
+    """
+    __tablename__ = "doctor_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    appointment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("appointments.id"), nullable=False
+    )
+    doctor_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("doctors.id"), nullable=False
+    )
+    
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    appointment = relationship("Appointment")
+    doctor = relationship("Doctor")

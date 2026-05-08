@@ -8,12 +8,14 @@ Endpoints:
   GET  /api/me                  → Protected route: return current user info
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
+from jose import jwt, JWTError
 
 from app import crud, models, schemas, security
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.config import settings
 
 # ═══════════════════════════════════════════════════════════════════════
 # ROUTER SETUP
@@ -32,13 +34,15 @@ api_router = APIRouter(prefix="/api", tags=["Protected"])
 
 @auth_router.post(
     "/register/doctor",
-    response_model=schemas.UserResponse,
+    response_model=schemas.Token,
     status_code=status.HTTP_201_CREATED,
 )
 def register_doctor(
-    payload: schemas.DoctorRegister, db: Session = Depends(get_db)
+    payload: schemas.DoctorRegister,
+    response: Response,
+    db: Session = Depends(get_db),
 ):
-    """Register a new doctor. Creates User + empty Doctor profile."""
+    """Register a new doctor. Creates User + empty Doctor profile. Returns JWT."""
 
     existing = crud.get_user_by_email(db, email=payload.email)
     if existing:
@@ -47,13 +51,17 @@ def register_doctor(
             detail="A user with this email already exists.",
         )
 
+    # Fall back to CareConnect default hospital if none provided
+    from app.constants import DEFAULT_HOSPITAL_ID
+    hospital_id = payload.hospital_id or DEFAULT_HOSPITAL_ID
+
     # 1. Create the User row
     db_user = crud.create_user(
         db,
         email=payload.email,
         password=payload.password,
         full_name=payload.full_name,
-        hospital_id=payload.hospital_id,
+        hospital_id=hospital_id,
         role=models.RoleEnum.DOCTOR,
     )
 
@@ -63,9 +71,33 @@ def register_doctor(
         user_id=db_user.id,
         full_name=payload.full_name,
         specialization=payload.specialization or "",
+        phone_number=payload.phone_number,
     )
 
-    return db_user
+    # 3. Generate tokens so user is authenticated immediately
+    access_token = security.create_access_token(
+        data={
+            "sub": str(db_user.id),
+            "hospital_id": str(db_user.hospital_id),
+            "type": "access",
+            "role": db_user.role.value,
+        }
+    )
+    refresh_token = security.create_refresh_token(subject=db_user.id)
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+
+    return schemas.Token(
+        access_token=access_token,
+        token_type="bearer",
+        user_id=db_user.id,
+        role=db_user.role.value,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -77,13 +109,15 @@ def register_doctor(
 
 @auth_router.post(
     "/register/caregiver",
-    response_model=schemas.UserResponse,
+    response_model=schemas.Token,
     status_code=status.HTTP_201_CREATED,
 )
 def register_caregiver(
-    payload: schemas.CaregiverRegister, db: Session = Depends(get_db)
+    payload: schemas.CaregiverRegister,
+    response: Response,
+    db: Session = Depends(get_db),
 ):
-    """Register a new caregiver. Creates User + Caregiver profile."""
+    """Register a new caregiver. Creates User + Caregiver profile. Returns JWT."""
 
     existing = crud.get_user_by_email(db, email=payload.email)
     if existing:
@@ -92,13 +126,17 @@ def register_caregiver(
             detail="A user with this email already exists.",
         )
 
+    # Fall back to CareConnect default hospital if none provided
+    from app.constants import DEFAULT_HOSPITAL_ID
+    hospital_id = payload.hospital_id or DEFAULT_HOSPITAL_ID
+
     # 1. Create the User row
     db_user = crud.create_user(
         db,
         email=payload.email,
         password=payload.password,
         full_name=payload.full_name,
-        hospital_id=payload.hospital_id,
+        hospital_id=hospital_id,
         role=models.RoleEnum.CAREGIVER,
     )
 
@@ -110,7 +148,30 @@ def register_caregiver(
         whatsapp_number=payload.whatsapp_number,
     )
 
-    return db_user
+    # 3. Generate tokens so user is authenticated immediately
+    access_token = security.create_access_token(
+        data={
+            "sub": str(db_user.id),
+            "hospital_id": str(db_user.hospital_id),
+            "type": "access",
+            "role": db_user.role.value,
+        }
+    )
+    refresh_token = security.create_refresh_token(subject=db_user.id)
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+
+    return schemas.Token(
+        access_token=access_token,
+        token_type="bearer",
+        user_id=db_user.id,
+        role=db_user.role.value,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -168,6 +229,82 @@ def login(
         role=user.role.value,
     )
 
+# ═══════════════════════════════════════════════════════════════════════
+# POST /auth/refresh
+# Uses the HttpOnly refresh cookie to issue a new access token.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@auth_router.post("/refresh", response_model=schemas.Token)
+def refresh_token(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Exchange a valid refresh cookie for a new access token."""
+
+    token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+        )
+
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+            )
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token",
+            )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired or invalid",
+        )
+
+    user = crud.get_user_by_id(db, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+
+    # Issue new access token
+    new_access = security.create_access_token(
+        data={
+            "sub": str(user.id),
+            "hospital_id": str(user.hospital_id),
+            "type": "access",
+            "role": user.role.value,
+        }
+    )
+
+    # Rotate refresh token
+    new_refresh = security.create_refresh_token(subject=user.id)
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+
+    return schemas.Token(
+        access_token=new_access,
+        token_type="bearer",
+        user_id=user.id,
+        role=user.role.value,
+    )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # GET /api/me (Protected Route Test)
@@ -180,6 +317,8 @@ def get_me(current_user: models.User = Depends(get_current_user)):
     return {
         "id": str(current_user.id),
         "email": current_user.email,
+        "full_name": current_user.full_name,
         "role": current_user.role.value,
         "hospital_id": str(current_user.hospital_id),
     }
+

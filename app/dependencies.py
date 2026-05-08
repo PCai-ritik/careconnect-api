@@ -56,14 +56,14 @@ def get_current_user(
 
     # 1. THE WHERE: Which hospital does this user belong to?
     db.execute(
-        text("SET app.current_hospital_id = :hid"), {"hid": str(user.hospital_id)}
+        text('SET "app.current_hospital_id" = :hid'), {"hid": str(user.hospital_id)}
     )
 
     # 2. THE WHO: Which user.id is this? (Used by transaction policy)
-    db.execute(text("SET app.current_user_id = :uid"), {"uid": str(user.id)})
+    db.execute(text('SET "app.current_user_id" = :uid'), {"uid": str(user.id)})
 
     # 3. THE WHAT: What is their role? (For branching in SQL policies)
-    db.execute(text("SET app.current_role = :role"), {"role": user.role.value})
+    db.execute(text('SET "app.current_role" = :role'), {"role": user.role.value})
 
     # 4. THE PROFILE: Resolve the doctor/caregiver profile ID.
     #    RLS policies compare against doctors.id / caregivers.id,
@@ -78,7 +78,7 @@ def get_current_user(
         )
         if doctor:
             db.execute(
-                text("SET app.current_doctor_id = :did"),
+                text('SET "app.current_doctor_id" = :did'),
                 {"did": str(doctor.id)},
             )
     elif user.role == models.RoleEnum.CAREGIVER:
@@ -89,7 +89,7 @@ def get_current_user(
         )
         if caregiver:
             db.execute(
-                text("SET app.current_caregiver_id = :cid"),
+                text('SET "app.current_caregiver_id" = :cid'),
                 {"cid": str(caregiver.id)},
             )
 

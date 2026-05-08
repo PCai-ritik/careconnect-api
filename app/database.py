@@ -32,11 +32,12 @@ Base = declarative_base()
 def reset_rls_variables(dbapi_conn, connection_record, connection_proxy):
     """Reset all RLS session variables when a connection is checked out."""
     cursor = dbapi_conn.cursor()
-    cursor.execute("RESET app.current_hospital_id")
-    cursor.execute("RESET app.current_user_id")
-    cursor.execute("RESET app.current_role")
-    cursor.execute("RESET app.current_doctor_id")
-    cursor.execute("RESET app.current_caregiver_id")
+    # RESET doesn't support dotted GUC names — use SET ... TO DEFAULT instead
+    cursor.execute("SET \"app.current_hospital_id\" TO DEFAULT")
+    cursor.execute("SET \"app.current_user_id\" TO DEFAULT")
+    cursor.execute("SET \"app.current_role\" TO DEFAULT")
+    cursor.execute("SET \"app.current_doctor_id\" TO DEFAULT")
+    cursor.execute("SET \"app.current_caregiver_id\" TO DEFAULT")
     cursor.close()
 
 

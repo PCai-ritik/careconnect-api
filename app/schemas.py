@@ -45,15 +45,16 @@ class DoctorRegister(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    hospital_id: uuid.UUID
+    hospital_id: Optional[uuid.UUID] = None
     specialization: Optional[str] = ""
+    phone_number: Optional[str] = None
 
 
 class CaregiverRegister(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    hospital_id: uuid.UUID
+    hospital_id: Optional[uuid.UUID] = None
     whatsapp_number: str
 
 
@@ -94,6 +95,19 @@ class HospitalCreate(HospitalBase):
 class HospitalResponse(HospitalBase):
     id: uuid.UUID
     created_at: datetime
+
+
+class HospitalListItem(BaseSchema):
+    """Lightweight hospital info for registration dropdowns."""
+    id: uuid.UUID
+    name: str
+
+
+class HospitalBrandingResponse(BaseSchema):
+    """Hospital branding for white-label theming."""
+    name: str
+    brand_color: str
+    logo_url: Optional[str] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -181,13 +195,36 @@ class PatientBase(BaseSchema):
 
 
 class PatientCreate(PatientBase):
-    caregiver_id: uuid.UUID
-    hospital_id: uuid.UUID
+    caregiver_id: Optional[uuid.UUID] = None
+    doctor_id: Optional[uuid.UUID] = None
+    hospital_id: Optional[uuid.UUID] = None
+    aadhar_number: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
 
 
 class PatientResponse(PatientBase):
     id: uuid.UUID
+    doctor_id: Optional[uuid.UUID] = None
+    hospital_id: uuid.UUID
     created_at: datetime
+
+
+class PatientUpdate(BaseSchema):
+    """Partial update — all fields optional."""
+    full_name: Optional[str] = None
+    whatsapp_number: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = None
+    blood_group: Optional[str] = None
+    address: Optional[str] = None
+    aadhar_number: Optional[str] = None
+    allergies: Optional[List[str]] = None
+    existing_conditions: Optional[List[str]] = None
+    medical_history_summary: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    doctor_id: Optional[uuid.UUID] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -204,13 +241,22 @@ class AppointmentBase(BaseSchema):
 
 class AppointmentCreate(AppointmentBase):
     doctor_id: uuid.UUID
+    appointment_type: AppointmentTypeEnum = AppointmentTypeEnum.VIDEO
     patient_id: uuid.UUID
-    caregiver_id: uuid.UUID
+    caregiver_id: Optional[uuid.UUID] = None
     hospital_id: uuid.UUID
+
+
+class AppointmentStatusUpdate(BaseModel):
+    status: AppointmentStatusEnum
 
 
 class AppointmentResponse(AppointmentBase):
     id: uuid.UUID
+    hospital_id: uuid.UUID
+    doctor_id: uuid.UUID
+    patient_id: uuid.UUID
+    caregiver_id: Optional[uuid.UUID] = None
     status: AppointmentStatusEnum
     meeting_room_id: Optional[str] = None
     created_at: datetime
@@ -286,6 +332,21 @@ class VideoSessionResponse(BaseSchema):
     created_at: datetime
 
 
+class VideoJoinResponse(BaseSchema):
+    """Lightweight response for join endpoints — returns only the caller's token."""
+    room_name: str
+    join_token: str
+    patient_join_token: Optional[str] = None
+
+
+class PatientJoinResponse(BaseSchema):
+    """Response for the public patient join endpoint. Includes livekit_url
+    because the patient has no app config — everything comes from this response."""
+    room_name: str
+    join_token: str
+    livekit_url: str
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # TRANSACTION SCHEMAS
 # ═══════════════════════════════════════════════════════════════════════
@@ -338,3 +399,24 @@ class PostCallSummaryResponse(BaseSchema):
     doctor_notes: Optional[str] = None
     created_at: datetime
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# DASHBOARD STATS
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class DashboardStatsResponse(BaseSchema):
+    """Aggregated stats for the doctor's dashboard home page."""
+    avg_consult_minutes: int = 0
+    total_completed: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# AVAILABLE SLOTS
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class AvailableSlotResponse(BaseSchema):
+    """A single available time slot on a given day."""
+    start_time: str   # HH:MM
+    end_time: str     # HH:MM
