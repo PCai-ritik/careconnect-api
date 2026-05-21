@@ -7,13 +7,16 @@ to match the existing sync FastAPI codebase.
 """
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Optional
 
 from livekit import api
+from livekit.protocol import egress as egress_pb
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
 # Default token validity: 40 minutes (covers -10min early join + 30min call)
 DEFAULT_TOKEN_TTL = timedelta(minutes=40)
@@ -89,3 +92,60 @@ def create_join_token(
     )
 
     return token.to_jwt()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# EGRESS — CALL RECORDING
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def start_room_composite_egress(room_name: str) -> str:
+    """
+    Start recording a LiveKit room via Room Composite Egress.
+
+    Records audio-only as OGG and uploads to the local MinIO bucket
+    (S3-compatible). LiveKit Cloud requires a cloud storage backend
+    in EncodedFileOutput — local file paths are rejected.
+
+    When the recording finishes, LiveKit fires an 'egress_ended'
+    webhook that our /webhook/livekit endpoint catches.
+
+    Args:
+        room_name: The LiveKit room to record (e.g. "cc-<appointment_id>").
+
+    Returns:
+        The egress_id for tracking.
+    """
+
+    async def _start():
+        async with api.LiveKitAPI(
+            url=settings.LIVEKIT_URL,
+            api_key=settings.LIVEKIT_API_KEY,
+            api_secret=settings.LIVEKIT_API_SECRET,
+        ) as lk:
+            result = await lk.egress.start_room_composite_egress(
+                egress_pb.RoomCompositeEgressRequest(
+                    room_name=room_name,
+                    audio_only=True,
+                    file_outputs=[
+                        egress_pb.EncodedFileOutput(
+                            file_type=egress_pb.EncodedFileType.OGG,
+                            filepath=f"{room_name}.ogg",
+                            azure=egress_pb.AzureBlobUpload(
+                                account_name=settings.AZURE_STORAGE_ACCOUNT_NAME,
+                                account_key=settings.AZURE_STORAGE_ACCOUNT_KEY,
+                                container_name=settings.AZURE_STORAGE_CONTAINER_NAME,
+                            ),
+                        )
+                    ],
+                )
+            )
+            return result.egress_id
+
+    egress_id = asyncio.run(_start())
+    logger.info(
+        "Started Room Composite Egress for room %s (egress_id: %s)",
+        room_name, egress_id,
+    )
+    return egress_id
+

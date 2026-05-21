@@ -1,18 +1,23 @@
 version: '3.8'
 
 services:
-  db:
+  postgres:
     image: postgres:15-alpine
     container_name: careconnect_postgres
     restart: always
     environment:
-      - POSTGRES_USER=careconnect_admin
-      - POSTGRES_PASSWORD=supersecretpassword
-      - POSTGRES_DB=careconnect_db
+      POSTGRES_USER: careconnect_admin
+      POSTGRES_PASSWORD: supersecretpassword
+      POSTGRES_DB: careconnect_db
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careconnect_admin -d careconnect_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

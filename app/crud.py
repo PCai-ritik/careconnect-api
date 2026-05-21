@@ -359,6 +359,17 @@ def create_post_call_summary(
     return db_summary
 
 
+def get_post_call_summary(
+    db: Session, appointment_id: uuid.UUID
+):
+    """Retrieve the AI-generated post-call summary for an appointment."""
+    return (
+        db.query(models.PostCallSummary)
+        .filter(models.PostCallSummary.appointment_id == appointment_id)
+        .first()
+    )
+
+
 def get_available_slots(
     db: Session,
     doctor_id: uuid.UUID,
@@ -447,3 +458,36 @@ def get_available_slots(
             })
 
     return available
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 7. DOCTOR NOTES
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def create_doctor_note(
+    db: Session,
+    appointment_id: uuid.UUID,
+    doctor_id: uuid.UUID,
+    content: str,
+):
+    """Create a private doctor note linked to an appointment."""
+    db_note = models.DoctorNote(
+        appointment_id=appointment_id,
+        doctor_id=doctor_id,
+        content=content,
+    )
+    db.add(db_note)
+    db.commit()
+    db.refresh(db_note)
+    return db_note
+
+
+def get_notes_by_appointment(db: Session, appointment_id: uuid.UUID):
+    """Fetch all doctor notes for a given appointment, oldest first."""
+    return (
+        db.query(models.DoctorNote)
+        .filter(models.DoctorNote.appointment_id == appointment_id)
+        .order_by(models.DoctorNote.created_at.asc())
+        .all()
+    )

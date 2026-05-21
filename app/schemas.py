@@ -397,6 +397,7 @@ class PostCallSummaryResponse(BaseSchema):
     prescriptions: Optional[List[str]] = None
     follow_up: Optional[str] = None
     doctor_notes: Optional[str] = None
+    summary: Optional[str] = None          # Full bilingual JSON from the AI pipeline
     created_at: datetime
 
 
@@ -420,3 +421,23 @@ class AvailableSlotResponse(BaseSchema):
     """A single available time slot on a given day."""
     start_time: str   # HH:MM
     end_time: str     # HH:MM
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DOCTOR NOTES
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class DoctorNoteCreate(BaseSchema):
+    """Create a private note during a consultation."""
+    appointment_id: uuid.UUID
+    content: str
+
+
+class DoctorNoteResponse(BaseSchema):
+    """Doctor note with server-assigned fields."""
+    id: uuid.UUID
+    appointment_id: uuid.UUID
+    doctor_id: uuid.UUID
+    content: str
+    created_at: datetime

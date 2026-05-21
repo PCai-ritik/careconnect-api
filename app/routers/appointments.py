@@ -5,6 +5,7 @@ Endpoints:
   POST   /appointments                   → Book a consultation
   GET    /appointments                   → List appointments (RLS-filtered)
   GET    /appointments/{id}              → Get single appointment detail
+  GET    /appointments/{id}/summary      → Get AI post-call summary
   PATCH  /appointments/{id}/status       → Update appointment status
   POST   /appointments/{id}/start-session → Start video session (Doctor)
   GET    /appointments/{id}/join         → Get join token for current user
@@ -197,6 +198,44 @@ def get_appointment(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# GET /appointments/{id}/summary — Post-call AI summary
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/{appointment_id}/summary",
+    response_model=schemas.PostCallSummaryResponse,
+)
+def get_appointment_summary(
+    appointment_id: uuid.UUID,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Retrieve the AI-generated post-call summary for an appointment.
+
+    Accessible by both doctors and caregivers — RLS ensures they can only
+    see summaries for their own appointments.  Returns 404 if the summary
+    hasn't been generated yet (AI pipeline still running).
+    """
+    # First verify the appointment exists and the user has access (RLS)
+    appointment = crud.get_appointment_by_id(db, appointment_id)
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Appointment not found",
+        )
+
+    summary = crud.get_post_call_summary(db, appointment_id)
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Summary not yet available — the AI pipeline may still be processing.",
+        )
+    return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # PATCH /appointments/{id}/status — Update appointment status
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -279,7 +318,7 @@ def start_video_session(
             detail="A video session already exists for this appointment.",
         )
 
-    # 3. Create LiveKit room + tokens
+    # 3. Create LiveKit room + generate tokens
     room_name = f"cc-{appointment_id}"
     video.create_room(room_name)
 
@@ -312,17 +351,33 @@ def start_video_session(
     appointment.status = models.AppointmentStatusEnum.IN_PROGRESS
 
     # 5. Commit with Race-Condition Protection
+    #    Commit BEFORE starting Egress so that concurrent requests
+    #    (e.g. React Strict Mode double-fire) hit IntegrityError here
+    #    and bail out — only the winning request proceeds to step 6.
     from sqlalchemy.exc import IntegrityError
     try:
         db.commit()
         db.refresh(session)
     except IntegrityError:
-        # If React Strict Mode double-fires and bypasses the initial check,
-        # the database's UNIQUE constraint will trigger an IntegrityError.
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A video session already exists for this appointment.",
+        )
+
+    # 6. Start Egress recording — AFTER commit succeeds.
+    #    This guarantees only one Egress instance per appointment.
+    #    Audio-only OGG saved to shared Docker volume (/out).
+    #    When the call ends, LiveKit fires an 'egress_ended' webhook
+    #    that triggers the AI pipeline (transcription → summary → DB).
+    import logging
+    try:
+        video.start_room_composite_egress(room_name)
+    except Exception as e:
+        # Don't block the session if egress fails — the call can still
+        # proceed, just without recording. Log the error for debugging.
+        logging.getLogger(__name__).error(
+            "Failed to start Egress recording for room %s: %s", room_name, e
         )
 
     return schemas.VideoJoinResponse(

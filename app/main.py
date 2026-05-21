@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.auth import auth_router, api_router
-from app.routers import doctors, patients, appointments, records, hospitals
+from app.routers import doctors, patients, appointments, records, hospitals, webhooks, notes
 from app.constants import DEFAULT_HOSPITAL_ID, DEFAULT_HOSPITAL_NAME, DEFAULT_HOSPITAL_BRAND_COLOR
 
 
@@ -81,6 +81,8 @@ app.include_router(doctors.router)    # /doctors, /doctors/profile, /doctors/onb
 app.include_router(patients.router)   # /patients
 app.include_router(appointments.router)  # /appointments
 app.include_router(records.router)       # /medical-records, /patients/{id}/records
+app.include_router(webhooks.router)      # /webhook/livekit
+app.include_router(notes.router)         # /doctor-notes
 
 
 # ═══════════════════════════════════════════════════════════════════════
