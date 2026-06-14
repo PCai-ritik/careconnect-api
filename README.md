@@ -33,16 +33,13 @@ To run the backend API server locally, you must first start the database and app
 
 The interactive API documentation will be available at `http://localhost:8000/docs`.
 
-## Ngrok & LiveKit Webhooks (Local Testing)
+## Ngrok Setup
 
-For the AI post-call summaries to generate automatically, LiveKit Cloud needs to send an `egress_ended` webhook back to this API when a video call finishes. Because LiveKit cannot reach your `localhost` directly, you must tunnel your local port to the public internet using **ngrok**:
+Because your mobile phone cannot reach your PCs `localhost` directly, you must tunnel your local port to the public internet using **ngrok**:
 
 1. Run the ngrok HTTP tunnel on port 8000:
    ```bash
    ngrok http 8000
    ```
 2. Copy the forwarding URL (e.g., `https://<random-id>.ngrok-free.app`).
-3. Log in to the [LiveKit Cloud Dashboard](https://cloud.livekit.io/).
-4. Navigate to **Settings -> Webhooks**.
-5. Add your new webhook URL: `https://<random-id>.ngrok-free.app/webhook/livekit`.
-6. Finally, update the `EXPO_PUBLIC_API_URL` inside the mobile app's `.env.local` to point to this ngrok URL so your phone can reach the API.
+3. Finally, update the `EXPO_PUBLIC_API_URL` inside the mobile app's `.env.local` to point to this ngrok URL so your phone can reach the API.
