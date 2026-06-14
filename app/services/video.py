@@ -131,10 +131,18 @@ def start_room_composite_egress(room_name: str) -> str:
                         egress_pb.EncodedFileOutput(
                             file_type=egress_pb.EncodedFileType.OGG,
                             filepath=f"{room_name}.ogg",
-                            azure=egress_pb.AzureBlobUpload(
-                                account_name=settings.AZURE_STORAGE_ACCOUNT_NAME,
-                                account_key=settings.AZURE_STORAGE_ACCOUNT_KEY,
-                                container_name=settings.AZURE_STORAGE_CONTAINER_NAME,
+                            # Azure setup (Temporarily disabled while awaiting credentials)
+                            # azure=egress_pb.AzureBlobUpload(
+                            #     account_name=settings.AZURE_STORAGE_ACCOUNT_NAME,
+                            #     account_key=settings.AZURE_STORAGE_ACCOUNT_KEY,
+                            #     container_name=settings.AZURE_STORAGE_CONTAINER_NAME,
+                            # ),
+                            # AWS S3 setup (Active for beta testing)
+                            s3=egress_pb.S3Upload(
+                                access_key=settings.AWS_ACCESS_KEY_ID,
+                                secret=settings.AWS_SECRET_ACCESS_KEY,
+                                region=settings.AWS_REGION,
+                                bucket=settings.AWS_S3_BUCKET_NAME,
                             ),
                         )
                     ],

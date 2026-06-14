@@ -105,8 +105,9 @@ def list_patient_records(
         if not caregiver or patient.caregiver_id != caregiver.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     elif current_user.role == models.RoleEnum.DOCTOR:
-        if patient.hospital_id != current_user.hospital_id:
+        if patient.hospital_id != current_user.effective_hospital_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
 
     return crud.get_records_by_patient(db, patient_id)
 

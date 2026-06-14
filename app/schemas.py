@@ -8,6 +8,7 @@ from app.models import (
     AppointmentTypeEnum,
     VideoProviderEnum,
     TransactionStatusEnum,
+    AffiliationStatusEnum,
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -30,6 +31,7 @@ class UserBase(BaseSchema):
     full_name: str
     hospital_id: uuid.UUID
     role: RoleEnum
+    affiliation_status: AffiliationStatusEnum = AffiliationStatusEnum.APPROVED
 
 
 class UserCreate(UserBase):
@@ -64,6 +66,22 @@ class UserResponse(UserBase):
     created_at: datetime
 
 
+class AdminCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    hospital_id: uuid.UUID
+
+
+class AdminUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    hospital_id: Optional[uuid.UUID] = None
+    is_active: Optional[bool] = None
+
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str
@@ -81,11 +99,29 @@ class TokenData(BaseModel):
 # HOSPITAL SCHEMAS
 # ═══════════════════════════════════════════════════════════════════════
 
+class TenantFeaturesSchema(BaseModel):
+    ai_summaries: bool = False
+    whatsapp_enabled: bool = False
+    whatsapp_api_key: Optional[str] = None
+
+
+class WhiteLabelConfigSchema(BaseModel):
+    primary_color: str = "#4F46E5"
+    heading_font: Optional[str] = None
+    body_font: Optional[str] = None
+    logo_url: Optional[str] = None
+    platform_name: Optional[str] = None
+    waiting_room_msg: Optional[str] = None
+    features: TenantFeaturesSchema = TenantFeaturesSchema()
+
 
 class HospitalBase(BaseSchema):
     name: str
     brand_color: str = "#4F46E5"
     logo_url: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    white_label_config: WhiteLabelConfigSchema = WhiteLabelConfigSchema()
 
 
 class HospitalCreate(HospitalBase):
@@ -108,6 +144,36 @@ class HospitalBrandingResponse(BaseSchema):
     name: str
     brand_color: str
     logo_url: Optional[str] = None
+    white_label_config: WhiteLabelConfigSchema = WhiteLabelConfigSchema()
+
+
+class HospitalLookupResponse(BaseSchema):
+    """Full lookup response including config and domains."""
+    id: uuid.UUID
+    name: str
+    brand_color: str
+    logo_url: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    white_label_config: WhiteLabelConfigSchema
+
+
+class HospitalBrandingUpdate(BaseModel):
+    name: Optional[str] = None
+    brand_color: Optional[str] = None
+    logo_url: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    white_label_config: Optional[WhiteLabelConfigSchema] = None
+
+
+class HospitalUpdate(HospitalBrandingUpdate):
+    pass
+
+
+
+class AffiliationRequest(BaseModel):
+    hospital_id: uuid.UUID
 
 
 # ═══════════════════════════════════════════════════════════════════════

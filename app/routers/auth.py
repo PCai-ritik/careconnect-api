@@ -51,9 +51,9 @@ def register_doctor(
             detail="A user with this email already exists.",
         )
 
-    # Fall back to CareConnect default hospital if none provided
+    # New users silently default to the DEFAULT_HOSPITAL_ID (frictionless onboarding)
     from app.constants import DEFAULT_HOSPITAL_ID
-    hospital_id = payload.hospital_id or DEFAULT_HOSPITAL_ID
+    hospital_id = DEFAULT_HOSPITAL_ID
 
     # 1. Create the User row
     db_user = crud.create_user(
@@ -126,9 +126,9 @@ def register_caregiver(
             detail="A user with this email already exists.",
         )
 
-    # Fall back to CareConnect default hospital if none provided
+    # New users silently default to the DEFAULT_HOSPITAL_ID (frictionless onboarding)
     from app.constants import DEFAULT_HOSPITAL_ID
-    hospital_id = payload.hospital_id or DEFAULT_HOSPITAL_ID
+    hospital_id = DEFAULT_HOSPITAL_ID
 
     # 1. Create the User row
     db_user = crud.create_user(
@@ -202,7 +202,14 @@ def login(
             detail="Invalid credentials",
         )
 
-    # 3. Create access token
+    # 3. Verify user is active
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User account is deactivated. Please contact support.",
+        )
+
+    # 4. Create access token
     access_token = security.create_access_token(
         data={
             "sub": str(user.id),
@@ -320,5 +327,41 @@ def get_me(current_user: models.User = Depends(get_current_user)):
         "full_name": current_user.full_name,
         "role": current_user.role.value,
         "hospital_id": str(current_user.hospital_id),
+        "affiliation_status": current_user.affiliation_status.value if current_user.affiliation_status else "APPROVED",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POST /api/users/request-affiliation
+# Request association/affiliation with a target hospital.
+# Sets affiliation_status = PENDING.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@api_router.post("/users/request-affiliation", response_model=schemas.UserResponse)
+def request_affiliation(
+    payload: schemas.AffiliationRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Allows a caregiver or doctor to request affiliation with a target hospital.
+    Their hospital_id is updated to the target hospital, and status is set to PENDING.
+    Until approved, their RLS context will fall back to the default hospital.
+    """
+    # 1. Verify target hospital exists
+    hospital = db.query(models.Hospital).filter(models.Hospital.id == payload.hospital_id).first()
+    if not hospital:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target hospital not found."
+        )
+
+    # 2. Update user record
+    current_user.hospital_id = payload.hospital_id
+    current_user.affiliation_status = models.AffiliationStatusEnum.PENDING
+    
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 

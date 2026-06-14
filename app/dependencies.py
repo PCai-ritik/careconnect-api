@@ -50,20 +50,33 @@ def get_current_user(
     if user is None:
         raise credentials_exception
 
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User account is deactivated. Please contact support.",
+        )
+
     # ═══════════════════════════════════════════════════════════════════
     # RLS HOOK: Setting session variables for PostgreSQL RLS policies
     # ═══════════════════════════════════════════════════════════════════
 
-    # 1. THE WHERE: Which hospital does this user belong to?
+    # 1. THE WHERE: Which hospital does this user belong to? (Fallback to DEFAULT_HOSPITAL_ID if PENDING)
+    hospital_id = user.hospital_id
+    if user.affiliation_status == models.AffiliationStatusEnum.PENDING:
+        from app.constants import DEFAULT_HOSPITAL_ID
+        hospital_id = DEFAULT_HOSPITAL_ID
+
     db.execute(
-        text('SET "app.current_hospital_id" = :hid'), {"hid": str(user.hospital_id)}
+        text('SET "app.current_hospital_id" = :hid'), {"hid": str(hospital_id)}
     )
 
     # 2. THE WHO: Which user.id is this? (Used by transaction policy)
     db.execute(text('SET "app.current_user_id" = :uid'), {"uid": str(user.id)})
 
     # 3. THE WHAT: What is their role? (For branching in SQL policies)
-    db.execute(text('SET "app.current_role" = :role'), {"role": user.role.value})
+    # RLS Bypass strategy: Map RoleEnum.ADMIN to 'SUPER_ADMIN' so RLS policy logic is bypassed for their hospital.
+    db_role = "SUPER_ADMIN" if user.role == models.RoleEnum.ADMIN else user.role.value
+    db.execute(text('SET "app.current_role" = :role'), {"role": db_role})
 
     # 4. THE PROFILE: Resolve the doctor/caregiver profile ID.
     #    RLS policies compare against doctors.id / caregivers.id,

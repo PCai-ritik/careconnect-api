@@ -24,7 +24,8 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
-from azure.storage.blob.aio import BlobServiceClient
+# from azure.storage.blob.aio import BlobServiceClient
+import boto3
 from fastapi import APIRouter, Request, HTTPException, status, Depends
 from sqlalchemy.orm import Session
 
@@ -141,22 +142,40 @@ async def handle_livekit_webhook(
         logger.error("Appointment %s not found in database", appointment_id)
         return {"status": "error", "detail": "Appointment not found"}
 
-    # ── 6. Download audio from Azure Blob Storage ──────────
-    conn_str = f"DefaultEndpointsProtocol=https;AccountName={settings.AZURE_STORAGE_ACCOUNT_NAME};AccountKey={settings.AZURE_STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net"
-    blob_service_client = BlobServiceClient.from_connection_string(conn_str)
-    blob_client = blob_service_client.get_blob_client(container=settings.AZURE_STORAGE_CONTAINER_NAME, blob=s3_key)
+    # ── 6. Download audio from AWS S3 ──────────
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_REGION,
+    )
 
     try:
-        stream = await blob_client.download_blob()
-        audio_bytes = await stream.readall()
+        response = await asyncio.to_thread(
+            s3_client.get_object,
+            Bucket=settings.AWS_S3_BUCKET_NAME,
+            Key=s3_key
+        )
+        audio_bytes = response["Body"].read()
     except Exception as e:
-        logger.critical("Recording NOT FOUND in Azure at blob '%s'. Error: %s", s3_key, e)
-        await blob_service_client.close()
-        return {"status": "error", "detail": f"Recording not found in Azure: {s3_key}"}
+        logger.critical("Recording NOT FOUND in S3 at key '%s'. Error: %s", s3_key, e)
+        return {"status": "error", "detail": f"Recording not found in S3: {s3_key}"}
+
+    # ── 6.5. IMMEDIATE CLEANUP — Delete recording from S3 to prevent leaks ─────
+    # We delete it immediately after reading into RAM. If transcription fails later,
+    # we don't leave orphaned files in S3 racking up storage costs.
+    try:
+        await asyncio.to_thread(
+            s3_client.delete_object,
+            Bucket=settings.AWS_S3_BUCKET_NAME,
+            Key=s3_key
+        )
+        logger.info("Deleted recording from S3 immediately after download: %s", s3_key)
+    except Exception as e:
+        logger.warning("Could not delete object %s from S3: %s", s3_key, e)
 
     if not audio_bytes:
         logger.critical("Recording is empty: %s", s3_key)
-        await blob_service_client.close()
         return {"status": "error", "detail": f"Recording is empty: {s3_key}"}
 
     logger.info("Read %d bytes from recording: %s", len(audio_bytes), s3_key)
@@ -282,14 +301,7 @@ async def handle_livekit_webhook(
     except Exception as e:
         logger.error("Failed to update VideoSession: %s", e)
 
-    # ── 13. CLEANUP — Delete recording from Azure to free storage ─────
-    try:
-        await blob_client.delete_blob()
-        logger.info("Deleted recording from Azure: %s", s3_key)
-    except Exception as e:
-        logger.warning("Could not delete blob %s from Azure: %s", s3_key, e)
-    finally:
-        await blob_service_client.close()
+    # S3 Cleanup was handled immediately after download in Step 6.5
 
     return {
         "status": "ok",

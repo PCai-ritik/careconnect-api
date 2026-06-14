@@ -47,7 +47,8 @@ def add_patient(
 
     # Auto-resolve hospital_id from current user
     if not payload.hospital_id:
-        payload.hospital_id = current_user.hospital_id
+        payload.hospital_id = current_user.effective_hospital_id
+
 
     # If the caller is a caregiver, override caregiver_id with their profile
     if current_user.role == models.RoleEnum.CAREGIVER:
@@ -126,9 +127,10 @@ def list_patients(
     # Super Admins see all patients in their hospital
     return (
         db.query(models.Patient)
-        .filter(models.Patient.hospital_id == current_user.hospital_id)
+        .filter(models.Patient.hospital_id == current_user.effective_hospital_id)
         .all()
     )
+
 
 
 # ═══════════════════════════════════════════════════════════════════════

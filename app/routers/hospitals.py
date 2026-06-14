@@ -12,13 +12,58 @@ These routes are public (no authentication required) because:
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import uuid
 
 from app import models, schemas
 from app.database import get_db
 
 router = APIRouter(prefix="/hospitals", tags=["Hospitals"])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# GET /hospitals/lookup
+# Resolves a hospital's white-label branding and config via hostname/domain/subdomain.
+# Falls back to default hospital if hostname is not found.
+# Public — no auth needed.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/lookup", response_model=schemas.HospitalLookupResponse)
+def lookup_hospital(
+    hostname: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Lookup hospital by domain or subdomain, falling back to default hospital."""
+    hospital = None
+    if hostname:
+        # Clean port if present (e.g. localhost:3000 -> localhost)
+        cleaned_hostname = hostname.split(":")[0].strip().lower()
+        
+        # 1. Match exact domain
+        hospital = db.query(models.Hospital).filter(models.Hospital.domain == cleaned_hostname).first()
+        
+        # 2. Match subdomain if not matched by domain
+        if not hospital:
+            parts = cleaned_hostname.split(".")
+            if len(parts) > 1:
+                subdomain_part = parts[0]
+                if subdomain_part == "www" and len(parts) > 2:
+                    subdomain_part = parts[1]
+                hospital = db.query(models.Hospital).filter(models.Hospital.subdomain == subdomain_part).first()
+            else:
+                hospital = db.query(models.Hospital).filter(models.Hospital.subdomain == cleaned_hostname).first()
+
+    if not hospital:
+        from app.constants import DEFAULT_HOSPITAL_ID
+        hospital = db.query(models.Hospital).filter(models.Hospital.id == DEFAULT_HOSPITAL_ID).first()
+
+    if not hospital:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hospital/tenant configuration not found.",
+        )
+    return hospital
 
 
 # ═══════════════════════════════════════════════════════════════════════

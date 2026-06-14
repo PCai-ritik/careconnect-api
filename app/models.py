@@ -4,7 +4,7 @@ from typing import Optional
 from datetime import datetime, date, time
 from sqlalchemy import (
     String, DateTime, Date, Time, Integer, Numeric,
-    ForeignKey, Text, Boolean, Enum, Float,
+    ForeignKey, Text, Boolean, Enum, Float, Index, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
@@ -19,6 +19,7 @@ from app.database import Base
 
 class RoleEnum(str, enum.Enum):
     SUPER_ADMIN = "SUPER_ADMIN"
+    ADMIN = "ADMIN"
     DOCTOR = "DOCTOR"
     CAREGIVER = "CAREGIVER"
 
@@ -50,6 +51,12 @@ class TransactionStatusEnum(str, enum.Enum):
     REFUNDED = "REFUNDED"
 
 
+class AffiliationStatusEnum(str, enum.Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # CORE MODELS
 # ═══════════════════════════════════════════════════════════════════════
@@ -62,6 +69,9 @@ class Hospital(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     brand_color: Mapped[str] = mapped_column(String(7), default="#4F46E5")
     logo_url: Mapped[str] = mapped_column(String, nullable=True)
+    domain: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    subdomain: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    white_label_config: Mapped[dict] = mapped_column(JSONB, server_default='{}', default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -77,6 +87,14 @@ class Hospital(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        Index(
+            "idx_unique_admin_per_hospital",
+            "hospital_id",
+            unique=True,
+            postgresql_where=text("role IN ('SUPER_ADMIN', 'ADMIN')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     hospital_id: Mapped[uuid.UUID] = mapped_column(
@@ -88,6 +106,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[RoleEnum] = mapped_column(Enum(RoleEnum), nullable=False)
+    affiliation_status: Mapped[AffiliationStatusEnum] = mapped_column(Enum(AffiliationStatusEnum), server_default="APPROVED", default=AffiliationStatusEnum.APPROVED, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -101,6 +120,14 @@ class User(Base):
     doctor_profile = relationship("Doctor", back_populates="user", uselist=False)
     caregiver_profile = relationship("Caregiver", back_populates="user", uselist=False)
     notifications = relationship("Notification", back_populates="user")
+
+    @property
+    def effective_hospital_id(self) -> uuid.UUID:
+        if self.affiliation_status == AffiliationStatusEnum.PENDING:
+            from app.constants import DEFAULT_HOSPITAL_ID
+            return DEFAULT_HOSPITAL_ID
+        return self.hospital_id
+
 
 
 # ═══════════════════════════════════════════════════════════════════════

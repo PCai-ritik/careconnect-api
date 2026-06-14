@@ -23,10 +23,16 @@ class Settings(BaseSettings):
     SARVAM_API_KEY: str = ""
     GROQ_API_KEY: str = ""
 
-    # Azure Blob Storage
+    # Azure Blob Storage (Commented out temporarily)
     AZURE_STORAGE_ACCOUNT_NAME: str = "your_account_name"
     AZURE_STORAGE_ACCOUNT_KEY: str = "your_account_key"
     AZURE_STORAGE_CONTAINER_NAME: str = "careconnect-recordings"
+
+    # AWS S3 Storage (Active for beta deployment)
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION: str = "us-east-1"
+    AWS_S3_BUCKET_NAME: str = "careconnect-recordings"
 
     model_config = SettingsConfigDict(env_file=dot_env_path)
 

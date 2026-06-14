@@ -168,7 +168,8 @@ def list_appointments(
         query = query.filter(models.Appointment.caregiver_id == caregiver.id)
     else:
         # Admin / Super Admin — scope to hospital
-        query = query.filter(models.Appointment.hospital_id == current_user.hospital_id)
+        query = query.filter(models.Appointment.hospital_id == current_user.effective_hospital_id)
+
 
     return query.order_by(models.Appointment.scheduled_time.desc()).all()
 

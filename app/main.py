@@ -4,13 +4,15 @@ CareConnect API — Application Entry Point
 Multi-tenant healthcare backend with JWT auth and PostgreSQL RLS.
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.routers.auth import auth_router, api_router
-from app.routers import doctors, patients, appointments, records, hospitals, webhooks, notes
+from app.routers import doctors, patients, appointments, records, hospitals, webhooks, notes, admin
 from app.constants import DEFAULT_HOSPITAL_ID, DEFAULT_HOSPITAL_NAME, DEFAULT_HOSPITAL_BRAND_COLOR
 
 
@@ -83,6 +85,12 @@ app.include_router(appointments.router)  # /appointments
 app.include_router(records.router)       # /medical-records, /patients/{id}/records
 app.include_router(webhooks.router)      # /webhook/livekit
 app.include_router(notes.router)         # /doctor-notes
+app.include_router(admin.router)         # /admin/*
+
+# Ensure uploads folder exists
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 
 
 # ═══════════════════════════════════════════════════════════════════════
