@@ -24,6 +24,7 @@ import uuid
 
 from app import models, schemas, crud, database
 from app.dependencies import get_current_user, require_role
+from app.ownership import verify_appointment_access
 from app.services import video
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
@@ -72,6 +73,10 @@ def create_appointment(
             detail="This time slot is already booked. Please choose a different time.",
         )
 
+    # ── TENANT ISOLATION: Override hospital_id from the authenticated user ──
+    # Never trust client-supplied hospital_id — always derive from the caller.
+    resolved_hospital_id = current_user.effective_hospital_id
+
     # Auto-resolve caregiver_id from the current user if not provided
     caregiver_id = payload.caregiver_id
     if not caregiver_id and current_user.role == models.RoleEnum.CAREGIVER:
@@ -81,7 +86,7 @@ def create_appointment(
 
     appointment = crud.create_appointment(
         db=db,
-        hospital_id=payload.hospital_id,
+        hospital_id=resolved_hospital_id,
         doctor_id=payload.doctor_id,
         patient_id=payload.patient_id,
         caregiver_id=caregiver_id,
@@ -187,7 +192,7 @@ def get_appointment(
 ):
     """
     Retrieve a single appointment by ID.
-    RLS ensures the user can only see appointments they have access to.
+    Application-level ownership check ensures tenant isolation.
     """
     appointment = crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
@@ -195,6 +200,7 @@ def get_appointment(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
+    verify_appointment_access(db, appointment, current_user)
     return appointment
 
 
@@ -215,17 +221,18 @@ def get_appointment_summary(
     """
     Retrieve the AI-generated post-call summary for an appointment.
 
-    Accessible by both doctors and caregivers — RLS ensures they can only
-    see summaries for their own appointments.  Returns 404 if the summary
-    hasn't been generated yet (AI pipeline still running).
+    Accessible by both doctors and caregivers — ownership check ensures
+    they can only see summaries for their own appointments. Returns 404
+    if the summary hasn't been generated yet (AI pipeline still running).
     """
-    # First verify the appointment exists and the user has access (RLS)
+    # Verify the appointment exists and the user has access
     appointment = crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
+    verify_appointment_access(db, appointment, current_user)
 
     summary = crud.get_post_call_summary(db, appointment_id)
     if not summary:
@@ -259,15 +266,19 @@ def update_appointment_status(
       IN_PROGRESS → COMPLETED (consultation ends)
       Any → CANCELLED (emergency reschedule)
     """
-    appointment = crud.update_appointment_status(
-        db, appointment_id, payload.status
-    )
+    # Verify access before allowing status change
+    appointment = crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
-    return appointment
+    verify_appointment_access(db, appointment, current_user)
+
+    updated = crud.update_appointment_status(
+        db, appointment_id, payload.status
+    )
+    return updated
 
 
 # ═══════════════════════════════════════════════════════════════════════

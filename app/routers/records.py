@@ -17,6 +17,7 @@ import uuid
 
 from app import models, schemas, crud, database
 from app.dependencies import get_current_user, require_role
+from app.ownership import verify_patient_access, verify_hospital_match
 
 router = APIRouter(tags=["Medical Records"])
 
@@ -43,11 +44,31 @@ def create_medical_record(
     Only Doctors and Admins can create records.
     Optionally includes inline prescriptions.
     """
+    # ── TENANT ISOLATION: Verify patient belongs to caller's hospital ──
+    patient = db.query(models.Patient).filter(models.Patient.id == payload.patient_id).first()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found.",
+        )
+    verify_patient_access(db, patient, current_user)
+
+    # Auto-resolve doctor_id from current user instead of trusting payload
+    resolved_doctor_id = payload.doctor_id
+    if current_user.role == models.RoleEnum.DOCTOR:
+        doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+        if not doctor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Doctor profile not found.",
+            )
+        resolved_doctor_id = doctor.id
+
     # Create the core record
     record = crud.create_medical_record(
         db=db,
         patient_id=payload.patient_id,
-        doctor_id=payload.doctor_id,
+        doctor_id=resolved_doctor_id,
         appointment_id=payload.appointment_id,
         diagnosis=payload.diagnosis,
         vitals=payload.vitals or {},
@@ -68,7 +89,7 @@ def create_medical_record(
         crud.add_prescriptions(
             db=db,
             medical_record_id=record.id,
-            doctor_id=payload.doctor_id,
+            doctor_id=resolved_doctor_id,
             patient_id=payload.patient_id,
             meds_list=[p.model_dump() for p in payload.prescriptions],
         )
@@ -139,10 +160,12 @@ def get_medical_record(
 
     # Verify access to the patient this record belongs to
     patient = db.query(models.Patient).filter(models.Patient.id == record.patient_id).first()
-    if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
-        if not caregiver or not patient or patient.caregiver_id != caregiver.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    verify_patient_access(db, patient, current_user)
 
     return record
 
@@ -175,6 +198,15 @@ def add_prescriptions_to_record(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Medical record not found",
         )
+
+    # ── TENANT ISOLATION: Verify the patient belongs to caller's hospital ──
+    patient = db.query(models.Patient).filter(models.Patient.id == record.patient_id).first()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    verify_patient_access(db, patient, current_user)
 
     crud.add_prescriptions(
         db=db,

@@ -17,6 +17,7 @@ import uuid
 
 from app import models, schemas, crud, database
 from app.dependencies import get_current_user, require_role
+from app.ownership import verify_appointment_access
 
 router = APIRouter(prefix="/doctor-notes", tags=["Doctor Notes"])
 
@@ -106,13 +107,7 @@ def list_doctor_notes(
             detail="Appointment not found.",
         )
 
-    # If caller is a doctor, verify they own the appointment
-    if current_user.role == models.RoleEnum.DOCTOR:
-        doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
-        if not doctor or appointment.doctor_id != doctor.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only view notes for your own appointments.",
-            )
+    # Verify caller has access to this appointment (hospital + role check)
+    verify_appointment_access(db, appointment, current_user)
 
     return crud.get_notes_by_appointment(db, appointment_id)

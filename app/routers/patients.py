@@ -16,6 +16,7 @@ from typing import List
 from app import crud, models, schemas
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
+from app.ownership import verify_hospital_match
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
@@ -175,6 +176,10 @@ def update_patient(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only edit patients you manage.",
             )
+
+    # Doctors can only update patients in their own hospital
+    if current_user.role == models.RoleEnum.DOCTOR:
+        verify_hospital_match(db_patient.hospital_id, current_user)
 
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
