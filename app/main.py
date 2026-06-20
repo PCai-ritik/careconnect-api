@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.routers.auth import auth_router, api_router
 from app.routers import doctors, patients, appointments, records, hospitals, webhooks, notes, admin
 from app.constants import DEFAULT_HOSPITAL_ID, DEFAULT_HOSPITAL_NAME, DEFAULT_HOSPITAL_BRAND_COLOR
+from app.database import engine
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -41,7 +42,12 @@ async def lifespan(app: FastAPI):
             print(f"✅ Default hospital already exists: {existing.name}")
     finally:
         db.close()
+
     yield
+
+    # ── Shutdown: dispose the connection pool cleanly ───────────
+    engine.dispose()
+    print("🔌 Connection pool disposed")
 
 
 app = FastAPI(
@@ -101,3 +107,17 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 @app.get("/health", tags=["System"])
 def health_check():
     return {"status": "ok", "service": "careconnect-api"}
+
+
+@app.get("/health/db", tags=["System"])
+def db_pool_health():
+    """Report connection pool statistics for monitoring."""
+    pool = engine.pool
+    return {
+        "status": "ok",
+        "pool_size": pool.size(),
+        "checked_out": pool.checkedout(),
+        "checked_in": pool.checkedin(),
+        "overflow": pool.overflow(),
+        "total_active": pool.checkedout() + pool.checkedin(),
+    }
