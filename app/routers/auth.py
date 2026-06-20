@@ -9,8 +9,10 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 from jose import jwt, JWTError
+from typing import Any
 
 from app import crud, models, schemas, security
 from app.database import get_db
@@ -37,14 +39,14 @@ api_router = APIRouter(prefix="/api", tags=["Protected"])
     response_model=schemas.Token,
     status_code=status.HTTP_201_CREATED,
 )
-def register_doctor(
+async def register_doctor(
     payload: schemas.DoctorRegister,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Register a new doctor. Creates User + empty Doctor profile. Returns JWT."""
 
-    existing = crud.get_user_by_email(db, email=payload.email)
+    existing = await crud.get_user_by_email(db, email=payload.email)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -56,7 +58,7 @@ def register_doctor(
     hospital_id = DEFAULT_HOSPITAL_ID
 
     # 1. Create the User row
-    db_user = crud.create_user(
+    db_user = await crud.create_user(
         db,
         email=payload.email,
         password=payload.password,
@@ -66,9 +68,9 @@ def register_doctor(
     )
 
     # 2. Create a stub Doctor profile (onboarding fills the rest)
-    crud.create_doctor_profile(
+    await crud.create_doctor_profile(
         db,
-        user_id=db_user.id,
+        user_id=db_user.id,  # type: ignore
         full_name=payload.full_name,
         specialization=payload.specialization or "",
         phone_number=payload.phone_number,
@@ -77,13 +79,13 @@ def register_doctor(
     # 3. Generate tokens so user is authenticated immediately
     access_token = security.create_access_token(
         data={
-            "sub": str(db_user.id),
-            "hospital_id": str(db_user.hospital_id),
+            "sub": str(db_user.id),  # type: ignore
+            "hospital_id": str(db_user.hospital_id),  # type: ignore
             "type": "access",
-            "role": db_user.role.value,
+            "role": db_user.role.value,  # type: ignore
         }
     )
-    refresh_token = security.create_refresh_token(subject=db_user.id)
+    refresh_token = security.create_refresh_token(subject=db_user.id)  # type: ignore
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
@@ -95,8 +97,8 @@ def register_doctor(
     return schemas.Token(
         access_token=access_token,
         token_type="bearer",
-        user_id=db_user.id,
-        role=db_user.role.value,
+        user_id=db_user.id,  # type: ignore
+        role=db_user.role.value,  # type: ignore
     )
 
 
@@ -112,14 +114,14 @@ def register_doctor(
     response_model=schemas.Token,
     status_code=status.HTTP_201_CREATED,
 )
-def register_caregiver(
+async def register_caregiver(
     payload: schemas.CaregiverRegister,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Register a new caregiver. Creates User + Caregiver profile. Returns JWT."""
 
-    existing = crud.get_user_by_email(db, email=payload.email)
+    existing = await crud.get_user_by_email(db, email=payload.email)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -131,7 +133,7 @@ def register_caregiver(
     hospital_id = DEFAULT_HOSPITAL_ID
 
     # 1. Create the User row
-    db_user = crud.create_user(
+    db_user = await crud.create_user(
         db,
         email=payload.email,
         password=payload.password,
@@ -141,9 +143,9 @@ def register_caregiver(
     )
 
     # 2. Create the Caregiver profile
-    crud.create_caregiver_profile(
+    await crud.create_caregiver_profile(
         db,
-        user_id=db_user.id,
+        user_id=db_user.id,  # type: ignore
         full_name=payload.full_name,
         whatsapp_number=payload.whatsapp_number,
     )
@@ -169,7 +171,7 @@ def register_caregiver(
     return schemas.Token(
         access_token=access_token,
         token_type="bearer",
-        user_id=db_user.id,
+        user_id=db_user.id, # type: ignore
         role=db_user.role.value,
     )
 
@@ -180,15 +182,15 @@ def register_caregiver(
 
 
 @auth_router.post("/login", response_model=schemas.Token)
-def login(
+async def login(
     credentials: schemas.UserLogin,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Authenticate user, return access token + set refresh cookie."""
 
     # 1. Verify user exists
-    user = crud.get_user_by_email(db, email=credentials.email)
+    user = await crud.get_user_by_email(db, email=credentials.email)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -196,7 +198,7 @@ def login(
         )
 
     # 2. Verify password
-    if not security.verify_password(credentials.password, user.password_hash):
+    if not security.verify_password(credentials.password, user.password_hash): # type: ignore
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -232,8 +234,8 @@ def login(
     return schemas.Token(
         access_token=access_token,
         token_type="bearer",
-        user_id=user.id,
-        role=user.role.value,
+        user_id=user.id, # type: ignore
+        role=user.role.value, # type: ignore
     )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -243,10 +245,10 @@ def login(
 
 
 @auth_router.post("/refresh", response_model=schemas.Token)
-def refresh_token(
+async def refresh_token(
     request: Request,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Exchange a valid refresh cookie for a new access token."""
 
@@ -278,7 +280,7 @@ def refresh_token(
             detail="Refresh token expired or invalid",
         )
 
-    user = crud.get_user_by_id(db, user_id)
+    user = await crud.get_user_by_id(db, user_id)  # type: ignore
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -308,8 +310,8 @@ def refresh_token(
     return schemas.Token(
         access_token=new_access,
         token_type="bearer",
-        user_id=user.id,
-        role=user.role.value,
+        user_id=user.id,  # type: ignore
+        role=user.role.value,  # type: ignore
     )
 
 
@@ -319,9 +321,12 @@ def refresh_token(
 
 
 @api_router.get("/me")
-def get_me(current_user: models.User = Depends(get_current_user)):
+async def get_me(
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Return the authenticated user's identity. Proves JWT guard works."""
-    return {
+    response: dict[str, Any] = {
         "id": str(current_user.id),
         "email": current_user.email,
         "full_name": current_user.full_name,
@@ -329,6 +334,12 @@ def get_me(current_user: models.User = Depends(get_current_user)):
         "hospital_id": str(current_user.hospital_id),
         "affiliation_status": current_user.affiliation_status.value if current_user.affiliation_status else "APPROVED",
     }
+
+    if current_user.role == models.RoleEnum.DOCTOR:
+        doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id)
+        response["onboarding_completed"] = doctor.onboarding_completed if doctor else False
+
+    return response
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -339,10 +350,10 @@ def get_me(current_user: models.User = Depends(get_current_user)):
 
 
 @api_router.post("/users/request-affiliation", response_model=schemas.UserResponse)
-def request_affiliation(
+async def request_affiliation(
     payload: schemas.AffiliationRequest,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Allows a caregiver or doctor to request affiliation with a target hospital.
@@ -350,7 +361,7 @@ def request_affiliation(
     Until approved, their RLS context will fall back to the default hospital.
     """
     # 1. Verify target hospital exists
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == payload.hospital_id).first()
+    hospital = (await db.execute(select(models.Hospital).where(models.Hospital.id == payload.hospital_id))).scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -361,7 +372,7 @@ def request_affiliation(
     current_user.hospital_id = payload.hospital_id
     current_user.affiliation_status = models.AffiliationStatusEnum.PENDING
     
-    db.commit()
-    db.refresh(current_user)
+    await db.commit()
+    await db.refresh(current_user)
     return current_user
 

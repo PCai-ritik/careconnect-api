@@ -9,7 +9,9 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
+from sqlalchemy import select
 from typing import List, Optional
 import uuid
 
@@ -29,30 +31,32 @@ router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
 
 @router.get("", response_model=List[schemas.DoctorResponse])
-def list_doctors(
+async def list_doctors(
     hospital_id: uuid.UUID = Query(..., description="Filter by hospital"),
     specialization: Optional[str] = Query(None, description="Filter by specialization"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List doctors in a hospital. Public — no auth required.
     Only returns onboarded doctors with their availability slots.
     Optionally filter by specialization.
     """
-    query = (
-        db.query(models.Doctor)
+    stmt = (
+        select(models.Doctor)
         .join(models.User, models.Doctor.user_id == models.User.id)
         .options(joinedload(models.Doctor.availability_slots))
-        .filter(
+        .where(
             models.User.hospital_id == hospital_id,
             models.Doctor.onboarding_completed == True,
         )
     )
 
     if specialization:
-        query = query.filter(models.Doctor.specialization == specialization)
+        stmt = stmt.where(models.Doctor.specialization.ilike(f"%{specialization}%"))
 
-    return query.order_by(models.Doctor.full_name).all()
+    stmt = stmt.order_by(models.Doctor.full_name)
+    doctors = (await db.execute(stmt)).unique().scalars().all()
+    return doctors
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -62,14 +66,14 @@ def list_doctors(
 
 
 @router.get("/profile", response_model=schemas.DoctorResponse)
-def get_my_profile(
+async def get_my_profile(
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return the doctor profile linked to the current authenticated user."""
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -88,15 +92,15 @@ def get_my_profile(
 
 
 @router.put("/onboarding", response_model=schemas.DoctorResponse)
-def complete_onboarding(
+async def complete_onboarding(
     payload: schemas.DoctorUpdate,
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Submit doctor onboarding data. Sets onboarding_completed to True."""
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -107,8 +111,8 @@ def complete_onboarding(
     update_data = payload.model_dump(exclude_unset=True)
     update_data["onboarding_completed"] = True
 
-    updated_doctor = crud.update_doctor_onboarding(
-        db, doctor_id=doctor.id, update_data=update_data
+    updated_doctor = await crud.update_doctor_onboarding(
+        db, doctor_id=doctor.id, update_data=update_data # type: ignore
     )
     return updated_doctor
 
@@ -121,15 +125,15 @@ def complete_onboarding(
 
 
 @router.patch("/profile", response_model=schemas.DoctorResponse)
-def update_profile(
+async def update_profile(
     payload: schemas.DoctorUpdate,
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update doctor profile fields. Does not change onboarding_completed."""
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -140,8 +144,8 @@ def update_profile(
     update_data.pop("onboarding_completed", None)  # Don't touch onboarding flag
 
     if update_data:
-        updated_doctor = crud.update_doctor_onboarding(
-            db, doctor_id=doctor.id, update_data=update_data
+        updated_doctor = await crud.update_doctor_onboarding(
+            db, doctor_id=doctor.id, update_data=update_data # type: ignore
         )
         return updated_doctor
     return doctor
@@ -155,15 +159,15 @@ def update_profile(
 
 
 @router.put("/availability", status_code=status.HTTP_204_NO_CONTENT)
-def set_availability(
+async def set_availability(
     slots: List[schemas.DoctorAvailabilityBase],
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Replace the doctor's weekly availability schedule."""
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -171,7 +175,7 @@ def set_availability(
         )
 
     slot_dicts = [s.model_dump() for s in slots]
-    crud.set_doctor_availability(db, doctor_id=doctor.id, slots=slot_dicts)
+    await crud.set_doctor_availability(db, doctor_id=doctor.id, slots=slot_dicts) # type: ignore
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -182,22 +186,22 @@ def set_availability(
 
 
 @router.get("/dashboard-stats", response_model=schemas.DashboardStatsResponse)
-def get_dashboard_stats(
+async def get_dashboard_stats(
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return aggregated dashboard stats for the authenticated doctor."""
     from sqlalchemy import func as sqla_func
 
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         return schemas.DashboardStatsResponse()
 
     # Join appointments → video_sessions to get actual call durations
-    result = (
-        db.query(
+    stmt = (
+        select(
             sqla_func.count(models.VideoSession.id).label("total_completed"),
             sqla_func.coalesce(
                 sqla_func.avg(models.VideoSession.actual_duration_minutes), 0
@@ -207,15 +211,14 @@ def get_dashboard_stats(
             models.Appointment,
             models.VideoSession.appointment_id == models.Appointment.id,
         )
-        .filter(
+        .where(
             models.Appointment.doctor_id == doctor.id,
             models.VideoSession.actual_duration_minutes.isnot(None),
         )
-        .first()
     )
+    result = (await db.execute(stmt)).first()
 
     return schemas.DashboardStatsResponse(
-        avg_consult_minutes=int(result.avg_minutes) if result else 0,
-        total_completed=result.total_completed if result else 0,
+        avg_consult_minutes=int(result.avg_minutes) if result else 0, # type: ignore
+        total_completed=result.total_completed if result else 0, # type: ignore
     )
-

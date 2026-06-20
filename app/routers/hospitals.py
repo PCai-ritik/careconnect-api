@@ -11,7 +11,8 @@ These routes are public (no authentication required) because:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import List, Optional
 import uuid
 
@@ -30,9 +31,9 @@ router = APIRouter(prefix="/hospitals", tags=["Hospitals"])
 
 
 @router.get("/lookup", response_model=schemas.HospitalLookupResponse)
-def lookup_hospital(
+async def lookup_hospital(
     hostname: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Lookup hospital by domain or subdomain, falling back to default hospital."""
     hospital = None
@@ -41,7 +42,7 @@ def lookup_hospital(
         cleaned_hostname = hostname.split(":")[0].strip().lower()
         
         # 1. Match exact domain
-        hospital = db.query(models.Hospital).filter(models.Hospital.domain == cleaned_hostname).first()
+        hospital = (await db.execute(select(models.Hospital).where(models.Hospital.domain == cleaned_hostname))).scalar_one_or_none()
         
         # 2. Match subdomain if not matched by domain
         if not hospital:
@@ -50,13 +51,13 @@ def lookup_hospital(
                 subdomain_part = parts[0]
                 if subdomain_part == "www" and len(parts) > 2:
                     subdomain_part = parts[1]
-                hospital = db.query(models.Hospital).filter(models.Hospital.subdomain == subdomain_part).first()
+                hospital = (await db.execute(select(models.Hospital).where(models.Hospital.subdomain == subdomain_part))).scalar_one_or_none()
             else:
-                hospital = db.query(models.Hospital).filter(models.Hospital.subdomain == cleaned_hostname).first()
+                hospital = (await db.execute(select(models.Hospital).where(models.Hospital.subdomain == cleaned_hostname))).scalar_one_or_none()
 
     if not hospital:
         from app.constants import DEFAULT_HOSPITAL_ID
-        hospital = db.query(models.Hospital).filter(models.Hospital.id == DEFAULT_HOSPITAL_ID).first()
+        hospital = (await db.execute(select(models.Hospital).where(models.Hospital.id == DEFAULT_HOSPITAL_ID))).scalar_one_or_none()
 
     if not hospital:
         raise HTTPException(
@@ -74,9 +75,9 @@ def lookup_hospital(
 
 
 @router.get("", response_model=List[schemas.HospitalListItem])
-def list_hospitals(db: Session = Depends(get_db)):
+async def list_hospitals(db: AsyncSession = Depends(get_db)):
     """List all hospitals. Used by registration forms to populate a selector."""
-    return db.query(models.Hospital).order_by(models.Hospital.name).all()
+    return (await db.execute(select(models.Hospital).order_by(models.Hospital.name))).scalars().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -87,12 +88,12 @@ def list_hospitals(db: Session = Depends(get_db)):
 
 
 @router.get("/{hospital_id}/branding", response_model=schemas.HospitalBrandingResponse)
-def get_hospital_branding(
+async def get_hospital_branding(
     hospital_id: uuid.UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get hospital branding (name, color, logo) for white-label theming."""
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == hospital_id).first()
+    hospital = (await db.execute(select(models.Hospital).where(models.Hospital.id == hospital_id))).scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

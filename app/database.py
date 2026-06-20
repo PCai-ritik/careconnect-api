@@ -1,10 +1,11 @@
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 
 from app.config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL,
+engine = create_async_engine(
+    settings.ASYNC_DATABASE_URL,
 
     # ── Pool sizing ─────────────────────────────────────────────
     pool_size=settings.DB_POOL_SIZE,        # persistent connections kept alive
@@ -19,7 +20,7 @@ engine = create_engine(
     echo_pool="debug" if settings.DB_ECHO_POOL else False,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
 
@@ -37,7 +38,7 @@ Base = declarative_base()
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@event.listens_for(engine, "checkout")
+@event.listens_for(engine.sync_engine, "checkout")
 def reset_rls_variables(dbapi_conn, connection_record, connection_proxy):
     """Reset all RLS session variables when a connection is checked out."""
     cursor = dbapi_conn.cursor()
@@ -50,9 +51,6 @@ def reset_rls_variables(dbapi_conn, connection_record, connection_proxy):
     cursor.close()
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session

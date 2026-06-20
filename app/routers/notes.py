@@ -11,7 +11,7 @@ post-call summary pipeline.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 import uuid
 
@@ -32,9 +32,9 @@ router = APIRouter(prefix="/doctor-notes", tags=["Doctor Notes"])
     response_model=schemas.DoctorNoteResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_doctor_note(
+async def create_doctor_note(
     payload: schemas.DoctorNoteCreate,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
@@ -46,7 +46,7 @@ def create_doctor_note(
     from the current user's profile — no need to pass it explicitly.
     """
     # Resolve the doctor profile from the current user
-    doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -54,7 +54,7 @@ def create_doctor_note(
         )
 
     # Verify the appointment exists
-    appointment = crud.get_appointment_by_id(db, payload.appointment_id)
+    appointment = await crud.get_appointment_by_id(db, payload.appointment_id) # type: ignore
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -68,10 +68,10 @@ def create_doctor_note(
             detail="You can only add notes to your own appointments.",
         )
 
-    note = crud.create_doctor_note(
+    note = await crud.create_doctor_note(
         db=db,
         appointment_id=payload.appointment_id,
-        doctor_id=doctor.id,
+        doctor_id=doctor.id, # type: ignore
         content=payload.content,
     )
     return note
@@ -86,9 +86,9 @@ def create_doctor_note(
     "/{appointment_id}",
     response_model=List[schemas.DoctorNoteResponse],
 )
-def list_doctor_notes(
+async def list_doctor_notes(
     appointment_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.SUPER_ADMIN])
     ),
@@ -100,7 +100,7 @@ def list_doctor_notes(
     Notes are returned in chronological order (oldest first).
     """
     # Verify the appointment exists
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id) # type: ignore
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -108,6 +108,6 @@ def list_doctor_notes(
         )
 
     # Verify caller has access to this appointment (hospital + role check)
-    verify_appointment_access(db, appointment, current_user)
+    await verify_appointment_access(db, appointment, current_user)
 
-    return crud.get_notes_by_appointment(db, appointment_id)
+    return await crud.get_notes_by_appointment(db, appointment_id)

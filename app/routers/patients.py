@@ -10,7 +10,8 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import List
 
 from app import crud, models, schemas
@@ -32,12 +33,12 @@ router = APIRouter(prefix="/patients", tags=["Patients"])
 @router.post(
     "", response_model=schemas.PatientResponse, status_code=status.HTTP_201_CREATED
 )
-def add_patient(
+async def add_patient(
     payload: schemas.PatientCreate,
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.CAREGIVER])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Register a new patient.
@@ -53,18 +54,18 @@ def add_patient(
 
     # If the caller is a caregiver, override caregiver_id with their profile
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id) # type: ignore
         if not caregiver:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Caregiver profile not found.",
             )
-        payload.caregiver_id = caregiver.id
+        payload.caregiver_id = caregiver.id # type: ignore
 
     # If the caller is a doctor, auto-set doctor_id to their profile
     doctor_id = payload.doctor_id
     if current_user.role == models.RoleEnum.DOCTOR:
-        doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+        doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
         if not doctor:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -74,12 +75,12 @@ def add_patient(
 
     patient_data = payload.model_dump(exclude={"caregiver_id", "hospital_id", "doctor_id"})
 
-    db_patient = crud.create_patient(
+    db_patient = await crud.create_patient(
         db,
-        caregiver_id=payload.caregiver_id,
-        hospital_id=payload.hospital_id,
+        caregiver_id=payload.caregiver_id, # type: ignore
+        hospital_id=payload.hospital_id, # type: ignore
         patient_data=patient_data,
-        doctor_id=doctor_id,
+        doctor_id=doctor_id, # type: ignore
     )
     return db_patient
 
@@ -93,11 +94,11 @@ def add_patient(
 
 
 @router.get("", response_model=List[schemas.PatientResponse])
-def list_patients(
+async def list_patients(
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.CAREGIVER, models.RoleEnum.SUPER_ADMIN])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List patients scoped by role (application-level + RLS):
@@ -106,31 +107,28 @@ def list_patients(
     - SUPER_ADMIN: all patients in their hospital
     """
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id) # type: ignore
         if not caregiver:
             return []
-        return (
-            db.query(models.Patient)
-            .filter(models.Patient.caregiver_id == caregiver.id)
-            .all()
-        )
+        return (await db.execute(
+            select(models.Patient)
+            .where(models.Patient.caregiver_id == caregiver.id)
+        )).scalars().all()
 
     if current_user.role == models.RoleEnum.DOCTOR:
-        doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+        doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
         if not doctor:
             return []
-        return (
-            db.query(models.Patient)
-            .filter(models.Patient.doctor_id == doctor.id)
-            .all()
-        )
+        return (await db.execute(
+            select(models.Patient)
+            .where(models.Patient.doctor_id == doctor.id)
+        )).scalars().all()
 
     # Super Admins see all patients in their hospital
-    return (
-        db.query(models.Patient)
-        .filter(models.Patient.hospital_id == current_user.effective_hospital_id)
-        .all()
-    )
+    return (await db.execute(
+        select(models.Patient)
+        .where(models.Patient.hospital_id == current_user.effective_hospital_id)
+    )).scalars().all()
 
 
 
@@ -143,13 +141,13 @@ def list_patients(
 @router.patch(
     "/{patient_id}", response_model=schemas.PatientResponse
 )
-def update_patient(
+async def update_patient(
     patient_id: str,
     payload: schemas.PatientUpdate,
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.CAREGIVER])
     ),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Update a patient's profile fields.
@@ -161,7 +159,10 @@ def update_patient(
     pid = _uuid.UUID(patient_id)
 
     # Verify the patient exists
-    db_patient = db.query(models.Patient).filter(models.Patient.id == pid).first()
+    db_patient = (await db.execute(
+        select(models.Patient).where(models.Patient.id == pid)
+    )).scalar_one_or_none()
+    
     if not db_patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -170,7 +171,7 @@ def update_patient(
 
     # Caregivers can only update their own patients
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id) # type: ignore
         if not caregiver or db_patient.caregiver_id != caregiver.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -179,11 +180,11 @@ def update_patient(
 
     # Doctors can only update patients in their own hospital
     if current_user.role == models.RoleEnum.DOCTOR:
-        verify_hospital_match(db_patient.hospital_id, current_user)
+        verify_hospital_match(db_patient.hospital_id, current_user) # type: ignore
 
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
         return db_patient
 
-    updated = crud.update_patient(db, patient_id=pid, data=update_data)
+    updated = await crud.update_patient(db, patient_id=pid, data=update_data) # type: ignore
     return updated

@@ -14,20 +14,20 @@ Usage in routers:
 
 import uuid
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models, crud
 
 
-def _resolve_doctor_id(db: Session, user: models.User) -> uuid.UUID | None:
+async def _resolve_doctor_id(db: AsyncSession, user: models.User) -> uuid.UUID | None:
     """Resolve the doctors.id from a User with role=DOCTOR."""
-    doctor = crud.get_doctor_by_user_id(db, user_id=user.id)
+    doctor = await crud.get_doctor_by_user_id(db, user_id=user.id)
     return doctor.id if doctor else None
 
 
-def _resolve_caregiver_id(db: Session, user: models.User) -> uuid.UUID | None:
+async def _resolve_caregiver_id(db: AsyncSession, user: models.User) -> uuid.UUID | None:
     """Resolve the caregivers.id from a User with role=CAREGIVER."""
-    caregiver = crud.get_caregiver_by_user_id(db, user_id=user.id)
+    caregiver = await crud.get_caregiver_by_user_id(db, user_id=user.id)
     return caregiver.id if caregiver else None
 
 
@@ -62,8 +62,8 @@ def verify_hospital_match(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def verify_appointment_access(
-    db: Session,
+async def verify_appointment_access(
+    db: AsyncSession,
     appointment: models.Appointment,
     current_user: models.User,
 ) -> None:
@@ -95,7 +95,7 @@ def verify_appointment_access(
 
     # DOCTOR must own the appointment
     if current_user.role == models.RoleEnum.DOCTOR:
-        doctor_id = _resolve_doctor_id(db, current_user)
+        doctor_id = await _resolve_doctor_id(db, current_user)
         if doctor_id and appointment.doctor_id == doctor_id:
             return
         raise HTTPException(
@@ -105,7 +105,7 @@ def verify_appointment_access(
 
     # CAREGIVER must be the one who booked the appointment
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver_id = _resolve_caregiver_id(db, current_user)
+        caregiver_id = await _resolve_caregiver_id(db, current_user)
         if caregiver_id and appointment.caregiver_id == caregiver_id:
             return
         raise HTTPException(
@@ -125,8 +125,8 @@ def verify_appointment_access(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def verify_patient_access(
-    db: Session,
+async def verify_patient_access(
+    db: AsyncSession,
     patient: models.Patient,
     current_user: models.User,
 ) -> None:
@@ -159,7 +159,7 @@ def verify_patient_access(
 
     # CAREGIVER must own the patient
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver_id = _resolve_caregiver_id(db, current_user)
+        caregiver_id = await _resolve_caregiver_id(db, current_user)
         if caregiver_id and patient.caregiver_id == caregiver_id:
             return
         raise HTTPException(

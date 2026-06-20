@@ -24,29 +24,26 @@ from app.database import engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Seed the default hospital on startup (idempotent)."""
-    from app.database import SessionLocal
+    from app.database import AsyncSessionLocal
     from app import models
 
-    db = SessionLocal()
-    try:
-        existing = db.get(models.Hospital, DEFAULT_HOSPITAL_ID)
+    async with AsyncSessionLocal() as db:
+        existing = await db.get(models.Hospital, DEFAULT_HOSPITAL_ID)
         if not existing:
             db.add(models.Hospital(
                 id=DEFAULT_HOSPITAL_ID,
                 name=DEFAULT_HOSPITAL_NAME,
                 brand_color=DEFAULT_HOSPITAL_BRAND_COLOR,
             ))
-            db.commit()
+            await db.commit()
             print(f"✅ Seeded default hospital: {DEFAULT_HOSPITAL_NAME} ({DEFAULT_HOSPITAL_ID})")
         else:
             print(f"✅ Default hospital already exists: {existing.name}")
-    finally:
-        db.close()
 
     yield
 
     # ── Shutdown: dispose the connection pool cleanly ───────────
-    engine.dispose()
+    await engine.dispose()
     print("🔌 Connection pool disposed")
 
 
@@ -112,12 +109,12 @@ def health_check():
 @app.get("/health/db", tags=["System"])
 def db_pool_health():
     """Report connection pool statistics for monitoring."""
-    pool = engine.pool
+    pool = engine.sync_engine.pool
     return {
         "status": "ok",
-        "pool_size": pool.size(),
-        "checked_out": pool.checkedout(),
-        "checked_in": pool.checkedin(),
-        "overflow": pool.overflow(),
-        "total_active": pool.checkedout() + pool.checkedin(),
+        "pool_size": pool.size(), # type: ignore
+        "checked_out": pool.checkedout(), # type: ignore
+        "checked_in": pool.checkedin(), # type: ignore
+        "overflow": pool.overflow(), # type: ignore
+        "total_active": pool.checkedout() + pool.checkedin(), # type: ignore
     }

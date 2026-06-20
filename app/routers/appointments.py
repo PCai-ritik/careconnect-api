@@ -17,7 +17,8 @@ All routes are protected by get_current_user, which:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 from typing import List
 from datetime import datetime, timezone, date as date_type
 import uuid
@@ -40,9 +41,9 @@ router = APIRouter(prefix="/appointments", tags=["Appointments"])
     response_model=schemas.AppointmentResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_appointment(
+async def create_appointment(
     payload: schemas.AppointmentCreate,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -52,7 +53,7 @@ def create_appointment(
       doctor_id and patient_id.
     """
     # Verify the doctor exists
-    doctor = crud.get_doctor_by_id(db, payload.doctor_id)
+    doctor = await crud.get_doctor_by_id(db, payload.doctor_id)
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -62,7 +63,7 @@ def create_appointment(
     # Check for slot collision — reject if the doctor already has an
     # active appointment overlapping this time window
     duration = payload.duration_minutes or 30
-    if crud.check_slot_conflict(
+    if await crud.check_slot_conflict(
         db,
         doctor_id=payload.doctor_id,
         scheduled_time=payload.scheduled_time,
@@ -80,16 +81,16 @@ def create_appointment(
     # Auto-resolve caregiver_id from the current user if not provided
     caregiver_id = payload.caregiver_id
     if not caregiver_id and current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id)
         if caregiver:
-            caregiver_id = caregiver.id
+            caregiver_id = caregiver.id  # type: ignore
 
-    appointment = crud.create_appointment(
+    appointment = await crud.create_appointment(  # type: ignore
         db=db,
         hospital_id=resolved_hospital_id,
         doctor_id=payload.doctor_id,
         patient_id=payload.patient_id,
-        caregiver_id=caregiver_id,
+        caregiver_id=caregiver_id,  # type: ignore
         scheduled_time=payload.scheduled_time,
         duration_minutes=duration,
         appointment_type=payload.appointment_type,
@@ -106,10 +107,10 @@ def create_appointment(
     "/available-slots",
     response_model=List[schemas.AvailableSlotResponse],
 )
-def get_available_slots(
+async def get_available_slots(
     doctor_id: uuid.UUID = Query(..., description="Doctor to check slots for"),
     date: str = Query(..., description="Target date as YYYY-MM-DD"),
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -124,14 +125,14 @@ def get_available_slots(
             detail="Invalid date format. Use YYYY-MM-DD.",
         )
 
-    doctor = crud.get_doctor_by_id(db, doctor_id)
+    doctor = await crud.get_doctor_by_id(db, doctor_id)
     if not doctor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Doctor not found",
         )
 
-    slots = crud.get_available_slots(db, doctor_id=doctor_id, target_date=target_date)
+    slots = await crud.get_available_slots(db, doctor_id=doctor_id, target_date=target_date)
     return slots
 
 
@@ -141,8 +142,8 @@ def get_available_slots(
 
 
 @router.get("", response_model=List[schemas.AppointmentResponse])
-def list_appointments(
-    db: Session = Depends(database.get_db),
+async def list_appointments(
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -151,32 +152,29 @@ def list_appointments(
       - Caregiver: only appointments they booked
       - Admin: all appointments in their hospital
     """
-    query = db.query(models.Appointment)
+    stmt = select(models.Appointment)
 
     if current_user.role == models.RoleEnum.DOCTOR:
-        doctor = (
-            db.query(models.Doctor.id)
-            .filter(models.Doctor.user_id == current_user.id)
-            .first()
-        )
-        if not doctor:
+        doctor_id: uuid.UUID | None = (
+            await db.execute(select(models.Doctor.id).filter(models.Doctor.user_id == current_user.id))
+        ).scalar_one_or_none()
+        if not doctor_id:
             return []
-        query = query.filter(models.Appointment.doctor_id == doctor.id)
+        stmt = stmt.where(models.Appointment.doctor_id == doctor_id)
     elif current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = (
-            db.query(models.Caregiver.id)
-            .filter(models.Caregiver.user_id == current_user.id)
-            .first()
-        )
-        if not caregiver:
+        caregiver_id: uuid.UUID | None = (
+            await db.execute(select(models.Caregiver.id).filter(models.Caregiver.user_id == current_user.id))
+        ).scalar_one_or_none()
+        if not caregiver_id:
             return []
-        query = query.filter(models.Appointment.caregiver_id == caregiver.id)
+        stmt = stmt.where(models.Appointment.caregiver_id == caregiver_id)
     else:
         # Admin / Super Admin — scope to hospital
-        query = query.filter(models.Appointment.hospital_id == current_user.effective_hospital_id)
+        stmt = stmt.where(models.Appointment.hospital_id == current_user.effective_hospital_id)
 
 
-    return query.order_by(models.Appointment.scheduled_time.desc()).all()
+    stmt = stmt.order_by(models.Appointment.scheduled_time.desc())
+    return (await db.execute(stmt)).scalars().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -185,22 +183,22 @@ def list_appointments(
 
 
 @router.get("/{appointment_id}", response_model=schemas.AppointmentResponse)
-def get_appointment(
+async def get_appointment(
     appointment_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
     Retrieve a single appointment by ID.
     Application-level ownership check ensures tenant isolation.
     """
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
-    verify_appointment_access(db, appointment, current_user)
+    await verify_appointment_access(db, appointment, current_user)
     return appointment
 
 
@@ -213,9 +211,9 @@ def get_appointment(
     "/{appointment_id}/summary",
     response_model=schemas.PostCallSummaryResponse,
 )
-def get_appointment_summary(
+async def get_appointment_summary(
     appointment_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -226,15 +224,15 @@ def get_appointment_summary(
     if the summary hasn't been generated yet (AI pipeline still running).
     """
     # Verify the appointment exists and the user has access
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
-    verify_appointment_access(db, appointment, current_user)
+    await verify_appointment_access(db, appointment, current_user)
 
-    summary = crud.get_post_call_summary(db, appointment_id)
+    summary = await crud.get_post_call_summary(db, appointment_id)
     if not summary:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -249,10 +247,10 @@ def get_appointment_summary(
 
 
 @router.patch("/{appointment_id}/status", response_model=schemas.AppointmentResponse)
-def update_appointment_status(
+async def update_appointment_status(
     appointment_id: uuid.UUID,
     payload: schemas.AppointmentStatusUpdate,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.SUPER_ADMIN])
     ),
@@ -267,15 +265,15 @@ def update_appointment_status(
       Any → CANCELLED (emergency reschedule)
     """
     # Verify access before allowing status change
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Appointment not found",
         )
-    verify_appointment_access(db, appointment, current_user)
+    await verify_appointment_access(db, appointment, current_user)
 
-    updated = crud.update_appointment_status(
+    updated = await crud.update_appointment_status(
         db, appointment_id, payload.status
     )
     return updated
@@ -294,9 +292,9 @@ def update_appointment_status(
     response_model=schemas.VideoJoinResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def start_video_session(
+async def start_video_session(
     appointment_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR])
     ),
@@ -311,7 +309,7 @@ def start_video_session(
     4. Persists a VideoSession row and moves the appointment to IN_PROGRESS.
     """
     # 1. Verify appointment exists
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id)
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -319,11 +317,9 @@ def start_video_session(
         )
 
     # 2. Standard Check (Catches normal sequential duplicates)
-    existing = (
-        db.query(models.VideoSession)
-        .filter(models.VideoSession.appointment_id == appointment_id)
-        .first()
-    )
+    existing: models.VideoSession | None = (
+        await db.execute(select(models.VideoSession).where(models.VideoSession.appointment_id == appointment_id))
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -332,7 +328,7 @@ def start_video_session(
 
     # 3. Create LiveKit room + generate tokens
     room_name = f"cc-{appointment_id}"
-    video.create_room(room_name)
+    await video.create_room(room_name)
 
     doctor_token = video.create_join_token(
         room_name,
@@ -368,10 +364,10 @@ def start_video_session(
     #    and bail out — only the winning request proceeds to step 6.
     from sqlalchemy.exc import IntegrityError
     try:
-        db.commit()
-        db.refresh(session)
+        await db.commit()
+        await db.refresh(session)
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A video session already exists for this appointment.",
@@ -384,7 +380,7 @@ def start_video_session(
     #    that triggers the AI pipeline (transcription → summary → DB).
     import logging
     try:
-        video.start_room_composite_egress(room_name)
+        await video.start_room_composite_egress(room_name)
     except Exception as e:
         # Don't block the session if egress fails — the call can still
         # proceed, just without recording. Log the error for debugging.
@@ -410,9 +406,9 @@ def start_video_session(
     "/{appointment_id}/join",
     response_model=schemas.VideoJoinResponse,
 )
-def get_join_token(
+async def get_join_token(
     appointment_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -422,11 +418,9 @@ def get_join_token(
     - CAREGIVER → join_token_caregiver
     - Patient flow (WhatsApp deep link) will be added later.
     """
-    session = (
-        db.query(models.VideoSession)
-        .filter(models.VideoSession.appointment_id == appointment_id)
-        .first()
-    )
+    session: models.VideoSession | None = (
+        await db.execute(select(models.VideoSession).where(models.VideoSession.appointment_id == appointment_id))
+    ).scalar_one_or_none()
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -451,9 +445,9 @@ def get_join_token(
         )
 
     return schemas.VideoJoinResponse(
-        room_name=session.room_name,
-        join_token=token,
-        patient_join_token=session.join_token_patient,
+        room_name=session.room_name,  # type: ignore
+        join_token=token,  # type: ignore
+        patient_join_token=session.join_token_patient,  # type: ignore
     )
 
 
@@ -467,10 +461,10 @@ def get_join_token(
     "/{appointment_id}/join-patient",
     response_model=schemas.PatientJoinResponse,
 )
-def join_as_patient(
+async def join_as_patient(
     appointment_id: uuid.UUID,
     token: str,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
 ):
     """
     Public patient join — no authentication required.
@@ -481,11 +475,9 @@ def join_as_patient(
     """
     from app.config import settings
 
-    session = (
-        db.query(models.VideoSession)
-        .filter(models.VideoSession.appointment_id == appointment_id)
-        .first()
-    )
+    session: models.VideoSession | None = (
+        await db.execute(select(models.VideoSession).where(models.VideoSession.appointment_id == appointment_id))
+    ).scalar_one_or_none()
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -500,7 +492,7 @@ def join_as_patient(
         )
 
     return schemas.PatientJoinResponse(
-        room_name=session.room_name,
-        join_token=session.join_token_patient,
+        room_name=session.room_name,  # type: ignore
+        join_token=session.join_token_patient,  # type: ignore
         livekit_url=settings.LIVEKIT_URL,
     )

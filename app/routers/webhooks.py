@@ -27,7 +27,8 @@ from datetime import datetime, timezone
 # from azure.storage.blob.aio import BlobServiceClient
 import boto3
 from fastapi import APIRouter, Request, HTTPException, status, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from livekit import api as livekit_api
 
@@ -72,7 +73,7 @@ def _parse_appointment_id(room_name: str) -> uuid.UUID:
 @router.post("/livekit", status_code=status.HTTP_200_OK)
 async def handle_livekit_webhook(
     request: Request,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
 ):
     """
     Receive and process signed webhook events from LiveKit.
@@ -137,7 +138,7 @@ async def handle_livekit_webhook(
         logger.error("Could not parse appointment ID from room name: %s", e)
         return {"status": "error", "detail": str(e)}
 
-    appointment = crud.get_appointment_by_id(db, appointment_id)
+    appointment = await crud.get_appointment_by_id(db, appointment_id) # type: ignore
     if not appointment:
         logger.error("Appointment %s not found in database", appointment_id)
         return {"status": "error", "detail": "Appointment not found"}
@@ -197,11 +198,10 @@ async def handle_livekit_webhook(
 
     # ── 8. GATHER CONTEXT — Prescriptions + Doctor Notes ─────────────
     # Fetch prescriptions for this patient
-    prescriptions_raw = (
-        db.query(models.Prescription)
-        .filter(models.Prescription.patient_id == appointment.patient_id)
-        .all()
-    )
+    prescriptions_raw = (await db.execute(
+        select(models.Prescription)
+        .where(models.Prescription.patient_id == appointment.patient_id)
+    )).scalars().all()
     prescriptions = [
         {
             "medication_name": p.medication_name,
@@ -214,7 +214,7 @@ async def handle_livekit_webhook(
     ]
 
     # Fetch doctor notes for this appointment
-    doctor_notes_raw = crud.get_notes_by_appointment(db, appointment_id)
+    doctor_notes_raw = await crud.get_notes_by_appointment(db, appointment_id) # type: ignore
     doctor_notes = [
         {"content": n.content}
         for n in doctor_notes_raw
@@ -252,13 +252,13 @@ async def handle_livekit_webhook(
         "treatment_plan": summary.get("treatment_plan", {}).get("english", ""),
         "prescriptions": summary.get("structured_prescriptions", []),
         "follow_up": summary.get("next_steps", {}).get("english", ""),
-        "doctor_notes": "\n".join(n.get("content", "") for n in doctor_notes) or None,
+        "doctor_notes": "\n".join(str(n.get("content", "")) for n in doctor_notes) or None,
         "transcript": transcript,
         "summary": json.dumps(summary, ensure_ascii=False),  # Valid JSON for frontend
     }
 
     try:
-        post_call_summary = crud.create_post_call_summary(
+        post_call_summary = await crud.create_post_call_summary(
             db=db,
             appointment_id=appointment_id,
             summary_data=summary_data,
@@ -273,26 +273,25 @@ async def handle_livekit_webhook(
 
     # ── 11. UPDATE STATUS — Mark appointment as COMPLETED ────────────
     try:
-        appointment.status = models.AppointmentStatusEnum.COMPLETED
-        db.commit()
+        appointment.status = models.AppointmentStatusEnum.COMPLETED # type: ignore
+        await db.commit()
         logger.info("Appointment %s status updated to COMPLETED", appointment_id)
     except Exception as e:
         logger.error("Failed to update appointment status: %s", e)
 
     # ── 12. UPDATE VIDEO SESSION — Set ended_at + duration ───────────
     try:
-        video_session = (
-            db.query(models.VideoSession)
-            .filter(models.VideoSession.appointment_id == appointment_id)
-            .first()
-        )
+        video_session = (await db.execute(
+            select(models.VideoSession)
+            .where(models.VideoSession.appointment_id == appointment_id)
+        )).scalar_one_or_none()
         if video_session:
             now = datetime.now(timezone.utc)
             video_session.ended_at = now
             if video_session.started_at:
                 duration = (now - video_session.started_at).total_seconds() / 60
                 video_session.actual_duration_minutes = int(duration)
-            db.commit()
+            await db.commit()
             logger.info(
                 "VideoSession updated — ended_at: %s, duration: %s min",
                 video_session.ended_at,

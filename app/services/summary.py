@@ -20,7 +20,7 @@ import time
 import logging
 from typing import List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from fastapi import HTTPException, status
@@ -114,7 +114,7 @@ def _get_llm() -> ChatGroq:
     return ChatGroq(
         model="llama3-70b-8192",
         temperature=0,
-        api_key=settings.GROQ_API_KEY,
+        api_key=SecretStr(settings.GROQ_API_KEY),
     )
 
 
@@ -172,7 +172,7 @@ async def generate_clinical_summary(
     start = time.perf_counter()
 
     try:
-        result: ClinicalSummary = await chain.ainvoke({
+        result: ClinicalSummary = await chain.ainvoke({ # type: ignore
             "transcript": transcript or "No transcript available.",
             "prescriptions": prescriptions_str,
             "doctor_notes": doctor_notes_str,

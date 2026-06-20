@@ -11,7 +11,8 @@ All routes are protected by get_current_user (JWT + RLS).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import List
 import uuid
 
@@ -32,9 +33,9 @@ router = APIRouter(tags=["Medical Records"])
     response_model=schemas.MedicalRecordResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_medical_record(
+async def create_medical_record(
     payload: schemas.MedicalRecordCreate,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.SUPER_ADMIN])
     ),
@@ -45,18 +46,21 @@ def create_medical_record(
     Optionally includes inline prescriptions.
     """
     # ── TENANT ISOLATION: Verify patient belongs to caller's hospital ──
-    patient = db.query(models.Patient).filter(models.Patient.id == payload.patient_id).first()
+    patient = (await db.execute(
+        select(models.Patient).where(models.Patient.id == payload.patient_id)
+    )).scalar_one_or_none()
+    
     if not patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient not found.",
         )
-    verify_patient_access(db, patient, current_user)
+    await verify_patient_access(db, patient, current_user)
 
     # Auto-resolve doctor_id from current user instead of trusting payload
     resolved_doctor_id = payload.doctor_id
     if current_user.role == models.RoleEnum.DOCTOR:
-        doctor = crud.get_doctor_by_user_id(db, user_id=current_user.id)
+        doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
         if not doctor:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -65,11 +69,11 @@ def create_medical_record(
         resolved_doctor_id = doctor.id
 
     # Create the core record
-    record = crud.create_medical_record(
+    record = await crud.create_medical_record(
         db=db,
         patient_id=payload.patient_id,
-        doctor_id=resolved_doctor_id,
-        appointment_id=payload.appointment_id,
+        doctor_id=resolved_doctor_id, # type: ignore
+        appointment_id=payload.appointment_id, # type: ignore
         diagnosis=payload.diagnosis,
         vitals=payload.vitals or {},
     )
@@ -81,19 +85,19 @@ def create_medical_record(
         record.treatment = payload.treatment
     if payload.follow_up_date:
         record.follow_up_date = payload.follow_up_date
-    db.commit()
-    db.refresh(record)
+    await db.commit()
+    await db.refresh(record)
 
     # If prescriptions were included inline, create them too
     if payload.prescriptions:
-        crud.add_prescriptions(
+        await crud.add_prescriptions(
             db=db,
-            medical_record_id=record.id,
-            doctor_id=resolved_doctor_id,
+            medical_record_id=record.id, # type: ignore
+            doctor_id=resolved_doctor_id, # type: ignore
             patient_id=payload.patient_id,
             meds_list=[p.model_dump() for p in payload.prescriptions],
         )
-        db.refresh(record)
+        await db.refresh(record)
 
     return record
 
@@ -107,9 +111,9 @@ def create_medical_record(
     "/patients/{patient_id}/records",
     response_model=List[schemas.MedicalRecordResponse],
 )
-def list_patient_records(
+async def list_patient_records(
     patient_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
@@ -117,12 +121,15 @@ def list_patient_records(
     Verifies the caller has access to this patient first.
     """
     # Verify the caller has access to this patient
-    patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
+    patient = (await db.execute(
+        select(models.Patient).where(models.Patient.id == patient_id)
+    )).scalar_one_or_none()
+    
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
     if current_user.role == models.RoleEnum.CAREGIVER:
-        caregiver = crud.get_caregiver_by_user_id(db, user_id=current_user.id)
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id) # type: ignore
         if not caregiver or patient.caregiver_id != caregiver.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     elif current_user.role == models.RoleEnum.DOCTOR:
@@ -130,7 +137,7 @@ def list_patient_records(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
 
-    return crud.get_records_by_patient(db, patient_id)
+    return await crud.get_records_by_patient(db, patient_id) # type: ignore
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -142,16 +149,16 @@ def list_patient_records(
     "/medical-records/{record_id}",
     response_model=schemas.MedicalRecordResponse,
 )
-def get_medical_record(
+async def get_medical_record(
     record_id: uuid.UUID,
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
     Retrieve a single medical record with its prescriptions.
     Verifies the caller has access to the patient.
     """
-    record = crud.get_record_by_id(db, record_id)
+    record = await crud.get_record_by_id(db, record_id) # type: ignore
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -159,13 +166,16 @@ def get_medical_record(
         )
 
     # Verify access to the patient this record belongs to
-    patient = db.query(models.Patient).filter(models.Patient.id == record.patient_id).first()
+    patient = (await db.execute(
+        select(models.Patient).where(models.Patient.id == record.patient_id)
+    )).scalar_one_or_none()
+    
     if not patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient not found",
         )
-    verify_patient_access(db, patient, current_user)
+    await verify_patient_access(db, patient, current_user)
 
     return record
 
@@ -179,10 +189,10 @@ def get_medical_record(
     "/medical-records/{record_id}/prescriptions",
     status_code=status.HTTP_201_CREATED,
 )
-def add_prescriptions_to_record(
+async def add_prescriptions_to_record(
     record_id: uuid.UUID,
     payload: List[schemas.PrescriptionBase],
-    db: Session = Depends(database.get_db),
+    db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(
         require_role([models.RoleEnum.DOCTOR, models.RoleEnum.SUPER_ADMIN])
     ),
@@ -192,7 +202,7 @@ def add_prescriptions_to_record(
     Only Doctors and Admins can prescribe.
     """
     # Verify the record exists
-    record = crud.get_record_by_id(db, record_id)
+    record = await crud.get_record_by_id(db, record_id) # type: ignore
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -200,22 +210,25 @@ def add_prescriptions_to_record(
         )
 
     # ── TENANT ISOLATION: Verify the patient belongs to caller's hospital ──
-    patient = db.query(models.Patient).filter(models.Patient.id == record.patient_id).first()
+    patient = (await db.execute(
+        select(models.Patient).where(models.Patient.id == record.patient_id)
+    )).scalar_one_or_none()
+    
     if not patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient not found",
         )
-    verify_patient_access(db, patient, current_user)
+    await verify_patient_access(db, patient, current_user)
 
-    crud.add_prescriptions(
+    await crud.add_prescriptions(
         db=db,
         medical_record_id=record_id,
-        doctor_id=record.doctor_id,
-        patient_id=record.patient_id,
+        doctor_id=record.doctor_id, # type: ignore
+        patient_id=record.patient_id, # type: ignore
         meds_list=[p.model_dump() for p in payload],
     )
 
     # Refresh and return the updated record
-    db.refresh(record)
+    await db.refresh(record)
     return {"message": "Prescriptions added", "record_id": str(record_id)}

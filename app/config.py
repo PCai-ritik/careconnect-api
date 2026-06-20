@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = 1800
     DB_ECHO_POOL: bool = False
 
+    @property
+    def ASYNC_DATABASE_URL(self) -> str:
+        """Convert postgresql:// to postgresql+asyncpg:// for async driver."""
+        return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
     model_config = SettingsConfigDict(env_file=dot_env_path)
 
 

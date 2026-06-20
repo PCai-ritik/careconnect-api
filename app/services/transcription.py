@@ -139,7 +139,7 @@ async def _transcribe_deepgram(audio_data: bytes) -> str:
             smart_format=True,
         )
 
-        response = await client.listen.asyncrest.v("1").transcribe_file(
+        response = await client.listen.asyncrest.v("1").transcribe_file( # type: ignore
             source, options
         )
 

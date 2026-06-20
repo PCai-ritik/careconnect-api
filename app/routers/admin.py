@@ -5,8 +5,9 @@ Endpoints for SUPER_ADMIN role to manage their hospital branding and staff affil
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, delete, func, outerjoin
 import uuid
 import os
 import shutil
@@ -29,18 +30,19 @@ router = APIRouter(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/pending-staff", response_model=List[schemas.UserResponse])
-def get_pending_staff(
+async def get_pending_staff(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """List all users who have requested affiliation with the admin's hospital and are pending approval."""
     if current_user.hospital_id == DEFAULT_HOSPITAL_ID:
         return []
         
-    return db.query(models.User).filter(
+    result = await db.execute(select(models.User).where(
         models.User.hospital_id == current_user.hospital_id,
         models.User.affiliation_status == models.AffiliationStatusEnum.PENDING
-    ).all()
+    ))
+    return result.scalars().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -48,16 +50,17 @@ def get_pending_staff(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.post("/approve-staff/{user_id}", response_model=schemas.UserResponse)
-def approve_staff(
+async def approve_staff(
     user_id: uuid.UUID,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Approve a pending staff member's affiliation request."""
-    user_to_approve = db.query(models.User).filter(
+    result = await db.execute(select(models.User).where(
         models.User.id == user_id,
         models.User.hospital_id == current_user.hospital_id
-    ).first()
+    ))
+    user_to_approve = result.scalar_one_or_none()
 
     if not user_to_approve:
         raise HTTPException(
@@ -66,8 +69,8 @@ def approve_staff(
         )
 
     user_to_approve.affiliation_status = models.AffiliationStatusEnum.APPROVED
-    db.commit()
-    db.refresh(user_to_approve)
+    await db.commit()
+    await db.refresh(user_to_approve)
     return user_to_approve
 
 
@@ -76,16 +79,17 @@ def approve_staff(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.post("/reject-staff/{user_id}", response_model=schemas.UserResponse)
-def reject_staff(
+async def reject_staff(
     user_id: uuid.UUID,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Reject a pending staff member's affiliation request. Resets their hospital to default."""
-    user_to_reject = db.query(models.User).filter(
+    result = await db.execute(select(models.User).where(
         models.User.id == user_id,
         models.User.hospital_id == current_user.hospital_id
-    ).first()
+    ))
+    user_to_reject = result.scalar_one_or_none()
 
     if not user_to_reject:
         raise HTTPException(
@@ -97,8 +101,8 @@ def reject_staff(
     user_to_reject.hospital_id = DEFAULT_HOSPITAL_ID
     user_to_reject.affiliation_status = models.AffiliationStatusEnum.APPROVED
     
-    db.commit()
-    db.refresh(user_to_reject)
+    await db.commit()
+    await db.refresh(user_to_reject)
     return user_to_reject
 
 
@@ -107,12 +111,15 @@ def reject_staff(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/branding", response_model=schemas.HospitalLookupResponse)
-def get_branding(
+async def get_branding(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetch branding information for the admin's hospital."""
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == current_user.hospital_id).first()
+    result = await db.execute(select(models.Hospital).where(
+        models.Hospital.id == current_user.hospital_id
+    ))
+    hospital = result.scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -126,13 +133,16 @@ def get_branding(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.put("/branding", response_model=schemas.HospitalLookupResponse)
-def update_branding(
+async def update_branding(
     payload: schemas.HospitalBrandingUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update branding config for the admin's hospital."""
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == current_user.hospital_id).first()
+    result = await db.execute(select(models.Hospital).where(
+        models.Hospital.id == current_user.hospital_id
+    ))
+    hospital = result.scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -172,15 +182,15 @@ def update_branding(
             hospital.logo_url = hospital.white_label_config["logo_url"]
 
     try:
-        db.commit()
+        await db.commit()
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Domain or subdomain is already in use by another hospital."
         )
 
-    db.refresh(hospital)
+    await db.refresh(hospital)
     return hospital
 
 
@@ -189,11 +199,11 @@ def update_branding(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/hospitals", response_model=List[schemas.HospitalLookupResponse], dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def list_hospitals(
-    db: Session = Depends(get_db)
+async def list_hospitals(
+    db: AsyncSession = Depends(get_db)
 ):
     """List all hospitals. Restricted to SUPER_ADMIN."""
-    return db.query(models.Hospital).order_by(models.Hospital.name).all()
+    return (await db.execute(select(models.Hospital).order_by(models.Hospital.name))).scalars().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -201,21 +211,25 @@ def list_hospitals(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.post("/hospitals", response_model=schemas.HospitalLookupResponse, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def create_hospital(
+async def create_hospital(
     payload: schemas.HospitalCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Create a new hospital tenant. Restricted to SUPER_ADMIN."""
     if payload.domain:
-        existing_domain = db.query(models.Hospital).filter(models.Hospital.domain == payload.domain.strip().lower()).first()
-        if existing_domain:
+        existing_domain = await db.execute(select(models.Hospital).where(
+            models.Hospital.domain == payload.domain.strip().lower()
+        ))
+        if existing_domain.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A hospital with this domain already exists."
             )
     if payload.subdomain:
-        existing_subdomain = db.query(models.Hospital).filter(models.Hospital.subdomain == payload.subdomain.strip().lower()).first()
-        if existing_subdomain:
+        existing_subdomain = await db.execute(select(models.Hospital).where(
+            models.Hospital.subdomain == payload.subdomain.strip().lower()
+        ))
+        if existing_subdomain.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A hospital with this subdomain already exists."
@@ -231,14 +245,14 @@ def create_hospital(
     )
     db.add(db_hospital)
     try:
-        db.commit()
+        await db.commit()
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A hospital with this domain or subdomain already exists."
         )
-    db.refresh(db_hospital)
+    await db.refresh(db_hospital)
     return db_hospital
 
 
@@ -247,13 +261,13 @@ def create_hospital(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/admins", response_model=List[schemas.UserResponse], dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def list_admins(
-    db: Session = Depends(get_db)
+async def list_admins(
+    db: AsyncSession = Depends(get_db)
 ):
     """List all administrators (both SUPER_ADMIN and ADMIN). Restricted to SUPER_ADMIN."""
-    return db.query(models.User).filter(
+    return (await db.execute(select(models.User).where(
         models.User.role.in_([models.RoleEnum.SUPER_ADMIN, models.RoleEnum.ADMIN])
-    ).order_by(models.User.email).all()
+    ).order_by(models.User.email))).scalars().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -261,13 +275,16 @@ def list_admins(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.post("/admins", response_model=schemas.UserResponse, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def create_admin(
+async def create_admin(
     payload: schemas.AdminCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Create a new ADMIN user for a specific hospital. Restricted to SUPER_ADMIN."""
     # Check if hospital exists
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == payload.hospital_id).first()
+    result = await db.execute(select(models.Hospital).where(
+        models.Hospital.id == payload.hospital_id
+    ))
+    hospital = result.scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -275,7 +292,10 @@ def create_admin(
         )
 
     # Check if email is already taken
-    existing_user = db.query(models.User).filter(models.User.email == payload.email).first()
+    result = await db.execute(select(models.User).where(
+        models.User.email == payload.email
+    ))
+    existing_user = result.scalar_one_or_none()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -283,10 +303,11 @@ def create_admin(
         )
 
     # Check if this hospital already has an administrator (RoleEnum.SUPER_ADMIN or RoleEnum.ADMIN)
-    existing_admin = db.query(models.User).filter(
+    result = await db.execute(select(models.User).where(
         models.User.hospital_id == payload.hospital_id,
         models.User.role.in_([models.RoleEnum.SUPER_ADMIN, models.RoleEnum.ADMIN])
-    ).first()
+    ))
+    existing_admin = result.scalar_one_or_none()
     if existing_admin:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -294,7 +315,7 @@ def create_admin(
         )
 
     try:
-        db_user = crud.create_user(
+        db_user = await crud.create_user(
             db=db,
             email=payload.email,
             password=payload.password,
@@ -304,7 +325,7 @@ def create_admin(
         )
         return db_user
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An error occurred while creating the admin account."
@@ -316,7 +337,7 @@ def create_admin(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.post("/upload-logo")
-def upload_logo(
+async def upload_logo(
     request: Request,
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user),
@@ -362,10 +383,10 @@ def upload_logo(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.put("/hospitals/{id}", response_model=schemas.HospitalLookupResponse, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def update_hospital(
+async def update_hospital(
     id: uuid.UUID,
     payload: schemas.HospitalUpdate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Update hospital tenant. Restricted to SUPER_ADMIN."""
     if id == DEFAULT_HOSPITAL_ID:
@@ -374,7 +395,8 @@ def update_hospital(
             detail="Cannot modify the default platform hospital branding through Super Controls."
         )
     
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == id).first()
+    result = await db.execute(select(models.Hospital).where(models.Hospital.id == id))
+    hospital = result.scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -385,10 +407,11 @@ def update_hospital(
     if payload.domain is not None:
         domain_str = payload.domain.strip().lower() if payload.domain.strip() else None
         if domain_str:
-            existing = db.query(models.Hospital).filter(
+            result = await db.execute(select(models.Hospital).where(
                 models.Hospital.domain == domain_str,
                 models.Hospital.id != id
-            ).first()
+            ))
+            existing = result.scalar_one_or_none()
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -402,10 +425,11 @@ def update_hospital(
     if payload.subdomain is not None:
         subdomain_str = payload.subdomain.strip().lower() if payload.subdomain.strip() else None
         if subdomain_str:
-            existing = db.query(models.Hospital).filter(
+            result = await db.execute(select(models.Hospital).where(
                 models.Hospital.subdomain == subdomain_str,
                 models.Hospital.id != id
-            ).first()
+            ))
+            existing = result.scalar_one_or_none()
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -422,7 +446,7 @@ def update_hospital(
         hospital.brand_color = payload.brand_color.strip()
 
     if payload.logo_url is not None:
-        hospital.logo_url = payload.logo_url.strip() or None
+        hospital.logo_url = payload.logo_url.strip() or None  # type: ignore
 
     if payload.white_label_config is not None:
         hospital.white_label_config = payload.white_label_config.model_dump()
@@ -433,14 +457,14 @@ def update_hospital(
             hospital.logo_url = hospital.white_label_config["logo_url"]
 
     try:
-        db.commit()
+        await db.commit()
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Integrity constraint violated during update."
         )
-    db.refresh(hospital)
+    await db.refresh(hospital)
     return hospital
 
 
@@ -449,9 +473,9 @@ def update_hospital(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.delete("/hospitals/{id}", status_code=status.HTTP_200_OK, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def delete_hospital(
+async def delete_hospital(
     id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Delete a hospital tenant and all its associated data. Restricted to SUPER_ADMIN."""
     if id == DEFAULT_HOSPITAL_ID:
@@ -460,7 +484,8 @@ def delete_hospital(
             detail="Cannot delete the default platform hospital."
         )
     
-    hospital = db.query(models.Hospital).filter(models.Hospital.id == id).first()
+    result = await db.execute(select(models.Hospital).where(models.Hospital.id == id))
+    hospital = result.scalar_one_or_none()
     if not hospital:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -468,84 +493,110 @@ def delete_hospital(
         )
 
     # 1. Gather all related entity IDs
-    user_ids = [u.id for u in db.query(models.User.id).filter(models.User.hospital_id == id).all()]
-    doctor_ids = [d.id for d in db.query(models.Doctor.id).filter(models.Doctor.user_id.in_(user_ids)).all()] if user_ids else []
-    caregiver_ids = [c.id for c in db.query(models.Caregiver.id).filter(models.Caregiver.user_id.in_(user_ids)).all()] if user_ids else []
-    patient_ids = [p.id for p in db.query(models.Patient.id).filter(models.Patient.hospital_id == id).all()]
-    appointment_ids = [a.id for a in db.query(models.Appointment.id).filter(models.Appointment.hospital_id == id).all()]
-    medical_record_ids = [m.id for m in db.query(models.MedicalRecord.id).filter(models.MedicalRecord.patient_id.in_(patient_ids)).all()] if patient_ids else []
+    user_ids = [u.id for u in (await db.execute(select(models.User.id).where(models.User.hospital_id == id)))]
+    doctor_ids = [d.id for d in (await db.execute(select(models.Doctor.id).where(models.Doctor.user_id.in_(user_ids))))] if user_ids else []
+    caregiver_ids = [c.id for c in (await db.execute(select(models.Caregiver.id).where(models.Caregiver.user_id.in_(user_ids))))] if user_ids else []
+    patient_ids = [p.id for p in (await db.execute(select(models.Patient.id).where(models.Patient.hospital_id == id)))]
+    appointment_ids = [a.id for a in (await db.execute(select(models.Appointment.id).where(models.Appointment.hospital_id == id)))]
+    medical_record_ids = [m.id for m in (await db.execute(select(models.MedicalRecord.id).where(models.MedicalRecord.patient_id.in_(patient_ids))))] if patient_ids else []
 
     try:
         # 2. Delete third-tier children/logs
         # transactions (FK to appointment and doctor)
         if appointment_ids or doctor_ids:
-            db.query(models.Transaction).filter(
-                (models.Transaction.appointment_id.in_(appointment_ids)) | 
-                (models.Transaction.doctor_id.in_(doctor_ids))
-            ).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.Transaction).where(
+                    (models.Transaction.appointment_id.in_(appointment_ids)) | 
+                    (models.Transaction.doctor_id.in_(doctor_ids))
+                )
+            )
 
         # post_call_summaries (FK to appointment)
         if appointment_ids:
-            db.query(models.PostCallSummary).filter(models.PostCallSummary.appointment_id.in_(appointment_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.PostCallSummary).where(models.PostCallSummary.appointment_id.in_(appointment_ids))
+            )
 
         # video_sessions (FK to appointment)
         if appointment_ids:
-            db.query(models.VideoSession).filter(models.VideoSession.appointment_id.in_(appointment_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.VideoSession).where(models.VideoSession.appointment_id.in_(appointment_ids))
+            )
 
         # prescriptions (FK to patient, doctor, medical_record)
         if patient_ids or doctor_ids or medical_record_ids:
-            db.query(models.Prescription).filter(
-                (models.Prescription.patient_id.in_(patient_ids)) | 
-                (models.Prescription.doctor_id.in_(doctor_ids)) | 
-                (models.Prescription.medical_record_id.in_(medical_record_ids))
-            ).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.Prescription).where(
+                    (models.Prescription.patient_id.in_(patient_ids)) | 
+                    (models.Prescription.doctor_id.in_(doctor_ids)) | 
+                    (models.Prescription.medical_record_id.in_(medical_record_ids))
+                )
+            )
 
         # doctor_notes (FK to appointment, doctor)
         if appointment_ids or doctor_ids:
-            db.query(models.DoctorNote).filter(
-                (models.DoctorNote.appointment_id.in_(appointment_ids)) | 
-                (models.DoctorNote.doctor_id.in_(doctor_ids))
-            ).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.DoctorNote).where(
+                    (models.DoctorNote.appointment_id.in_(appointment_ids)) | 
+                    (models.DoctorNote.doctor_id.in_(doctor_ids))
+                )
+            )
 
         # medical_records (FK to patient, doctor)
         if patient_ids or doctor_ids:
-            db.query(models.MedicalRecord).filter(
-                (models.MedicalRecord.patient_id.in_(patient_ids)) | 
-                (models.MedicalRecord.doctor_id.in_(doctor_ids))
-            ).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.MedicalRecord).where(
+                    (models.MedicalRecord.patient_id.in_(patient_ids)) | 
+                    (models.MedicalRecord.doctor_id.in_(doctor_ids))
+                )
+            )
 
         # doctor_availabilities (FK to doctor)
         if doctor_ids:
-            db.query(models.DoctorAvailability).filter(models.DoctorAvailability.doctor_id.in_(doctor_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.DoctorAvailability).where(models.DoctorAvailability.doctor_id.in_(doctor_ids))
+            )
 
         # 3. Delete second-tier entities
         # appointments
-        db.query(models.Appointment).filter(models.Appointment.hospital_id == id).delete(synchronize_session=False)
+        await db.execute(
+            delete(models.Appointment).where(models.Appointment.hospital_id == id)
+        )
 
         # patients
-        db.query(models.Patient).filter(models.Patient.hospital_id == id).delete(synchronize_session=False)
+        await db.execute(
+            delete(models.Patient).where(models.Patient.hospital_id == id)
+        )
 
         # doctors
         if doctor_ids:
-            db.query(models.Doctor).filter(models.Doctor.id.in_(doctor_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.Doctor).where(models.Doctor.id.in_(doctor_ids))
+            )
 
         # caregivers
         if caregiver_ids:
-            db.query(models.Caregiver).filter(models.Caregiver.id.in_(caregiver_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.Caregiver).where(models.Caregiver.id.in_(caregiver_ids))
+            )
 
         # notifications (FK to user)
         if user_ids:
-            db.query(models.Notification).filter(models.Notification.user_id.in_(user_ids)).delete(synchronize_session=False)
+            await db.execute(
+                delete(models.Notification).where(models.Notification.user_id.in_(user_ids))
+            )
 
         # 4. Delete users
-        db.query(models.User).filter(models.User.hospital_id == id).delete(synchronize_session=False)
+        await db.execute(
+            delete(models.User).where(models.User.hospital_id == id)
+        )
 
         # 5. Delete hospital
-        db.delete(hospital)
+        await db.delete(hospital)
 
-        db.commit()
+        await db.commit()
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Could not delete hospital tenant: {str(e)}"
@@ -559,17 +610,17 @@ def delete_hospital(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.put("/admins/{id}", response_model=schemas.UserResponse, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def update_admin(
+async def update_admin(
     id: uuid.UUID,
     payload: schemas.AdminUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Update administrator account. Restricted to SUPER_ADMIN."""
-    admin = db.query(models.User).filter(
+    admin = (await db.execute(select(models.User).where(
         models.User.id == id,
         models.User.role.in_([models.RoleEnum.SUPER_ADMIN, models.RoleEnum.ADMIN])
-    ).first()
+    ))).scalar()
     if not admin:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -589,7 +640,7 @@ def update_admin(
         email_str = payload.email.strip().lower()
         if email_str != admin.email:
             # Check email uniqueness
-            existing = db.query(models.User).filter(models.User.email == email_str).first()
+            existing = (await db.execute(select(models.User).where(models.User.email == email_str))).scalar()
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -611,11 +662,11 @@ def update_admin(
 
     if payload.hospital_id is not None and payload.hospital_id != admin.hospital_id:
         # Check if the target hospital already has an admin
-        existing_admin = db.query(models.User).filter(
+        existing_admin = (await db.execute(select(models.User).where(
             models.User.hospital_id == payload.hospital_id,
             models.User.role.in_([models.RoleEnum.SUPER_ADMIN, models.RoleEnum.ADMIN]),
             models.User.id != id
-        ).first()
+        ))).scalar()
         if existing_admin:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -623,7 +674,7 @@ def update_admin(
             )
         
         # Verify target hospital exists
-        hospital = db.query(models.Hospital).filter(models.Hospital.id == payload.hospital_id).first()
+        hospital = (await db.execute(select(models.Hospital).where(models.Hospital.id == payload.hospital_id))).scalar_one_or_none()
         if not hospital:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -641,14 +692,14 @@ def update_admin(
         admin.is_active = payload.is_active
 
     try:
-        db.commit()
+        await db.commit()
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Integrity constraint violated during update."
         )
-    db.refresh(admin)
+    await db.refresh(admin)
     return admin
 
 
@@ -657,16 +708,16 @@ def update_admin(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.delete("/admins/{id}", status_code=status.HTTP_200_OK, dependencies=[Depends(require_role([models.RoleEnum.SUPER_ADMIN]))])
-def delete_admin(
+async def delete_admin(
     id: uuid.UUID,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Delete an administrator account. Restricted to SUPER_ADMIN."""
-    admin = db.query(models.User).filter(
+    admin = (await db.execute(select(models.User).where(
         models.User.id == id,
         models.User.role.in_([models.RoleEnum.SUPER_ADMIN, models.RoleEnum.ADMIN])
-    ).first()
+    ))).scalar_one_or_none()
     
     if not admin:
         raise HTTPException(
@@ -687,20 +738,28 @@ def delete_admin(
         )
 
     # Delete notifications first
-    db.query(models.Notification).filter(models.Notification.user_id == id).delete(synchronize_session=False)
+    await db.execute(
+        delete(models.Notification).where(models.Notification.user_id == id)
+    )
 
     # Delete doctor / caregiver profile if exist
-    db.query(models.DoctorAvailability).filter(models.DoctorAvailability.doctor_id.in_(
-        db.query(models.Doctor.id).filter(models.Doctor.user_id == id)
-    )).delete(synchronize_session=False)
-    db.query(models.Doctor).filter(models.Doctor.user_id == id).delete(synchronize_session=False)
-    db.query(models.Caregiver).filter(models.Caregiver.user_id == id).delete(synchronize_session=False)
+    await db.execute(
+        delete(models.DoctorAvailability).where(models.DoctorAvailability.doctor_id.in_(
+            select(models.Doctor.id).where(models.Doctor.user_id == id)
+        ))
+    )
+    await db.execute(
+        delete(models.Doctor).where(models.Doctor.user_id == id)
+    )
+    await db.execute(
+        delete(models.Caregiver).where(models.Caregiver.user_id == id)
+    )
 
-    db.delete(admin)
+    await db.delete(admin)
     try:
-        db.commit()
+        await db.commit()
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Could not delete administrator: {str(e)}"
@@ -709,3 +768,246 @@ def delete_admin(
     return {"detail": "Administrator account deleted successfully."}
 
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# DOCTOR MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/doctors", response_model=schemas.UserResponse)
+async def create_doctor(
+    payload: schemas.AdminDoctorCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    existing = await crud.get_user_by_email(db, email=payload.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = await crud.create_user(
+        db=db,
+        email=payload.email,
+        password=payload.password,
+        full_name=payload.full_name,
+        hospital_id=current_user.hospital_id, # type: ignore
+        role=models.RoleEnum.DOCTOR
+    )
+    user.affiliation_status = models.AffiliationStatusEnum.APPROVED
+    await db.commit()
+    
+    db_doctor = models.Doctor(
+        user_id=user.id,
+        full_name=payload.full_name,
+        specialization=payload.specialization,
+        onboarding_completed=False
+    )
+    db.add(db_doctor)
+    await db.commit()
+    
+    return user
+
+
+@router.get("/doctors", response_model=List[schemas.AdminDoctorListItem])
+async def list_doctors(
+    hospital_id: str | None = None,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    patient_count_sq = (
+        select(models.Patient.doctor_id, func.count(models.Patient.id).label("patient_count"))
+        .group_by(models.Patient.doctor_id)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            models.Doctor.id,
+            models.User.id.label("user_id"),
+            models.User.full_name,
+            models.User.email,
+            models.Doctor.specialization,
+            models.Doctor.onboarding_completed,
+            models.User.is_active,
+            models.User.created_at,
+            func.coalesce(patient_count_sq.c.patient_count, 0).label("patient_count")
+        )
+        .select_from(models.Doctor)
+        .join(models.User, models.Doctor.user_id == models.User.id)
+        .outerjoin(patient_count_sq, models.Doctor.id == patient_count_sq.c.doctor_id)
+    )
+
+    if current_user.role == models.RoleEnum.SUPER_ADMIN:
+        if hospital_id:
+            import uuid as _uuid
+            stmt = stmt.where(models.User.hospital_id == _uuid.UUID(hospital_id))
+    else:
+        stmt = stmt.where(models.User.hospital_id == current_user.hospital_id)
+
+    stmt = stmt.order_by(models.User.created_at.desc())
+    result = await db.execute(stmt)
+    return result.mappings().all()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CAREGIVER MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/caregivers", response_model=schemas.UserResponse)
+async def create_caregiver(
+    payload: schemas.AdminCaregiverCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    existing = await crud.get_user_by_email(db, email=payload.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = await crud.create_user(
+        db=db,
+        email=payload.email,
+        password=payload.password,
+        full_name=payload.full_name,
+        hospital_id=current_user.hospital_id, # type: ignore
+        role=models.RoleEnum.CAREGIVER
+    )
+    user.affiliation_status = models.AffiliationStatusEnum.APPROVED
+    await db.commit()
+    
+    db_cg = models.Caregiver(
+        user_id=user.id,
+        full_name=payload.full_name,
+        whatsapp_number=payload.whatsapp_number
+    )
+    db.add(db_cg)
+    await db.commit()
+    await db.refresh(db_cg)
+
+    if payload.patient_ids:
+        await db.execute(
+            models.Patient.__table__.update()
+            .where(models.Patient.id.in_(payload.patient_ids))
+            .where(models.Patient.hospital_id == current_user.hospital_id)
+            .values(caregiver_id=db_cg.id)
+        )
+        await db.commit()
+
+    return user
+
+
+@router.get("/caregivers", response_model=List[schemas.AdminCaregiverListItem])
+async def list_caregivers(
+    hospital_id: str | None = None,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    patient_count_sq = (
+        select(models.Patient.caregiver_id, func.count(models.Patient.id).label("patient_count"))
+        .group_by(models.Patient.caregiver_id)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            models.Caregiver.id,
+            models.User.id.label("user_id"),
+            models.User.full_name,
+            models.User.email,
+            models.Caregiver.whatsapp_number,
+            models.User.is_active,
+            models.User.created_at,
+            func.coalesce(patient_count_sq.c.patient_count, 0).label("patient_count")
+        )
+        .select_from(models.Caregiver)
+        .join(models.User, models.Caregiver.user_id == models.User.id)
+        .outerjoin(patient_count_sq, models.Caregiver.id == patient_count_sq.c.caregiver_id)
+    )
+
+    if current_user.role == models.RoleEnum.SUPER_ADMIN:
+        if hospital_id:
+            import uuid as _uuid
+            stmt = stmt.where(models.User.hospital_id == _uuid.UUID(hospital_id))
+    else:
+        stmt = stmt.where(models.User.hospital_id == current_user.hospital_id)
+
+    stmt = stmt.order_by(models.User.created_at.desc())
+    result = await db.execute(stmt)
+    return result.mappings().all()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATIENT MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/patients", response_model=schemas.PatientResponse)
+async def create_patient(
+    payload: schemas.AdminPatientCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Verify doctor exists in hospital
+    doc_stmt = select(models.Doctor).join(models.User).where(
+        models.Doctor.id == payload.doctor_id,
+        models.User.hospital_id == current_user.hospital_id
+    )
+    doctor = (await db.execute(doc_stmt)).scalar_one_or_none()
+    if not doctor:
+        raise HTTPException(status_code=400, detail="Invalid doctor ID for this hospital")
+        
+    if payload.caregiver_id:
+        cg_stmt = select(models.Caregiver).join(models.User).where(
+            models.Caregiver.id == payload.caregiver_id,
+            models.User.hospital_id == current_user.hospital_id
+        )
+        cg = (await db.execute(cg_stmt)).scalar_one_or_none()
+        if not cg:
+            raise HTTPException(status_code=400, detail="Invalid caregiver ID for this hospital")
+
+    patient_data = payload.model_dump(exclude={"doctor_id", "caregiver_id"})
+    patient = await crud.create_patient(
+        db,
+        hospital_id=current_user.hospital_id, # type: ignore
+        doctor_id=payload.doctor_id,
+        caregiver_id=payload.caregiver_id,
+        patient_data=patient_data
+    )
+    return patient
+
+
+@router.get("/patients", response_model=List[schemas.AdminPatientListItem])
+async def list_patients(
+    hospital_id: str | None = None,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from sqlalchemy.orm import aliased
+    
+    DoctorUser = aliased(models.User)
+    CaregiverUser = aliased(models.User)
+
+    stmt = (
+        select(
+            models.Patient.id,
+            models.Patient.full_name,
+            models.Patient.whatsapp_number,
+            models.Patient.created_at,
+            models.Hospital.name.label("hospital_name"),
+            DoctorUser.full_name.label("doctor_name"),
+            CaregiverUser.full_name.label("caregiver_name")
+        )
+        .select_from(models.Patient)
+        .join(models.Hospital, models.Patient.hospital_id == models.Hospital.id)
+        .outerjoin(models.Doctor, models.Patient.doctor_id == models.Doctor.id)
+        .outerjoin(DoctorUser, models.Doctor.user_id == DoctorUser.id)
+        .outerjoin(models.Caregiver, models.Patient.caregiver_id == models.Caregiver.id)
+        .outerjoin(CaregiverUser, models.Caregiver.user_id == CaregiverUser.id)
+    )
+
+    if current_user.role == models.RoleEnum.SUPER_ADMIN:
+        if hospital_id:
+            import uuid as _uuid
+            stmt = stmt.where(models.Patient.hospital_id == _uuid.UUID(hospital_id))
+    else:
+        stmt = stmt.where(models.Patient.hospital_id == current_user.hospital_id)
+
+    stmt = stmt.order_by(models.Patient.created_at.desc())
+    result = await db.execute(stmt)
+    return result.mappings().all()

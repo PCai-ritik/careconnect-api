@@ -81,6 +81,64 @@ class AdminUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+# ── Admin-driven Creation Schemas ──
+
+class AdminDoctorCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    specialization: str = ""
+
+class AdminPatientCreate(BaseModel):
+    full_name: str
+    whatsapp_number: str
+    doctor_id: uuid.UUID
+    caregiver_id: Optional[uuid.UUID] = None
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = None
+    blood_group: Optional[str] = None
+    address: Optional[str] = None
+
+class AdminCaregiverCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    whatsapp_number: str
+    patient_ids: Optional[List[uuid.UUID]] = None
+
+# ── Admin List-View Response Schemas ──
+
+class AdminDoctorListItem(BaseSchema):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    specialization: str
+    onboarding_completed: bool
+    is_active: bool
+    patient_count: int = 0
+    created_at: datetime
+
+class AdminPatientListItem(BaseSchema):
+    id: uuid.UUID
+    full_name: str
+    whatsapp_number: str
+    doctor_name: Optional[str] = None
+    caregiver_name: Optional[str] = None
+    hospital_name: Optional[str] = None
+    created_at: datetime
+
+class AdminCaregiverListItem(BaseSchema):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    whatsapp_number: str
+    is_active: bool
+    patient_count: int = 0
+    created_at: datetime
+
+
 
 class Token(BaseModel):
     access_token: str
