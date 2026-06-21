@@ -8,7 +8,7 @@ Endpoints:
   PUT  /doctors/availability      → Set weekly availability schedule
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from sqlalchemy import select
@@ -18,6 +18,7 @@ import uuid
 from app import crud, models, schemas
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
+from app.services import vision
 
 router = APIRouter(prefix="/doctors", tags=["Doctors"])
 
@@ -115,6 +116,43 @@ async def complete_onboarding(
         db, doctor_id=doctor.id, update_data=update_data # type: ignore
     )
     return updated_doctor
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# POST /doctors/verify-license
+# Verifies an uploaded medical license document using AI Vision.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/verify-license")
+async def verify_license(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(
+        require_role([models.RoleEnum.DOCTOR])
+    ),
+):
+    """
+    Analyzes an uploaded image or PDF to verify if it is a medical license.
+    Returns the extracted license number and state if valid.
+    """
+    file_bytes = await file.read()
+    
+    try:
+        result = await vision.verify_medical_license(file_bytes, file.filename or "unknown.jpg")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze document. Please try again."
+        )
+
+    if not result.get("is_valid"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The uploaded document does not appear to be a valid medical license. Please ensure the image is clear and try again."
+        )
+        
+    return result
+
 
 
 # ═══════════════════════════════════════════════════════════════════════

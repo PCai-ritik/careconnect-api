@@ -21,14 +21,14 @@ from app import models, crud
 
 async def _resolve_doctor_id(db: AsyncSession, user: models.User) -> uuid.UUID | None:
     """Resolve the doctors.id from a User with role=DOCTOR."""
-    doctor = await crud.get_doctor_by_user_id(db, user_id=user.id)
-    return doctor.id if doctor else None
+    doctor = await crud.get_doctor_by_user_id(db, user_id=user.id) # type: ignore
+    return doctor.id if doctor else None # type: ignore
 
 
 async def _resolve_caregiver_id(db: AsyncSession, user: models.User) -> uuid.UUID | None:
     """Resolve the caregivers.id from a User with role=CAREGIVER."""
-    caregiver = await crud.get_caregiver_by_user_id(db, user_id=user.id)
-    return caregiver.id if caregiver else None
+    caregiver = await crud.get_caregiver_by_user_id(db, user_id=user.id) # type: ignore
+    return caregiver.id if caregiver else None # type: ignore
 
 
 # ═══════════════════════════════════════════════════════════════════════
