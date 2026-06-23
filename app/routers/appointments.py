@@ -85,6 +85,13 @@ async def create_appointment(
         if caregiver:
             caregiver_id = caregiver.id  # type: ignore
 
+    # ── Auto-populate location for in-person appointments ──
+    location_address = payload.location_address
+    if payload.appointment_type == models.AppointmentTypeEnum.IN_PERSON and not location_address:
+        # Snapshot the doctor's clinic address at booking time
+        if doctor.clinic_address:  # type: ignore
+            location_address = doctor.clinic_address  # type: ignore
+
     appointment = await crud.create_appointment(  # type: ignore
         db=db,
         hospital_id=resolved_hospital_id,
@@ -94,6 +101,7 @@ async def create_appointment(
         scheduled_time=payload.scheduled_time,
         duration_minutes=duration,
         appointment_type=payload.appointment_type,
+        location_address=location_address,
     )
     return appointment
 
@@ -110,6 +118,7 @@ async def create_appointment(
 async def get_available_slots(
     doctor_id: uuid.UUID = Query(..., description="Doctor to check slots for"),
     date: str = Query(..., description="Target date as YYYY-MM-DD"),
+    appointment_type: str | None = Query(None, description="VIDEO or IN_PERSON"),
     db: AsyncSession = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -132,7 +141,7 @@ async def get_available_slots(
             detail="Doctor not found",
         )
 
-    slots = await crud.get_available_slots(db, doctor_id=doctor_id, target_date=target_date)
+    slots = await crud.get_available_slots(db, doctor_id=doctor_id, target_date=target_date, appointment_type=appointment_type)
     return slots
 
 
@@ -152,6 +161,19 @@ async def list_appointments(
       - Caregiver: only appointments they booked
       - Admin: all appointments in their hospital
     """
+    from sqlalchemy import text
+    
+    # ── Auto-complete IN_PERSON appointments that have passed ──
+    # If the scheduled_time + duration has passed, assume they occurred.
+    await db.execute(text("""
+        UPDATE appointments 
+        SET status = 'COMPLETED' 
+        WHERE appointment_type = 'IN_PERSON' 
+          AND status IN ('CONFIRMED', 'IN_PROGRESS') 
+          AND scheduled_time + (duration_minutes || ' minutes')::interval < now()
+    """))
+    await db.commit()
+
     stmt = select(models.Appointment)
 
     if current_user.role == models.RoleEnum.DOCTOR:
@@ -316,9 +338,16 @@ async def start_video_session(
             detail="Appointment not found",
         )
 
-    # 2. Standard Check (Catches normal sequential duplicates)
+    # 2. Block only if there is an *active* (not-yet-ended) session.
+    #    An ended session (ended_at IS NOT NULL) means the doctor ended the call
+    #    and is now re-starting it — that is perfectly legal.
     existing: models.VideoSession | None = (
-        await db.execute(select(models.VideoSession).where(models.VideoSession.appointment_id == appointment_id))
+        await db.execute(
+            select(models.VideoSession).where(
+                models.VideoSession.appointment_id == appointment_id,
+                models.VideoSession.ended_at.is_(None),
+            )
+        )
     ).scalar_one_or_none()
     if existing:
         raise HTTPException(
@@ -396,6 +425,61 @@ async def start_video_session(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# POST /appointments/{id}/end-session — Tear down LiveKit room & egress
+# Called by the Doctor when they press "End Call". Stops the egress
+# recording immediately (instead of waiting for empty_timeout) and
+# deletes the room so no further compute or quota is consumed.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.post(
+    "/{appointment_id}/end-session",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def end_video_session(
+    appointment_id: uuid.UUID,
+    db: AsyncSession = Depends(database.get_db),
+    current_user: models.User = Depends(
+        require_role([models.RoleEnum.DOCTOR])
+    ),
+):
+    """
+    Tear down the LiveKit room for an appointment.
+
+    1. Looks up the VideoSession to get the room name.
+    2. Stops all active egress jobs for the room immediately — without
+       this, the egress keeps running until empty_timeout (up to 10 min)
+       wasting recording quota.
+    3. Deletes the LiveKit room, kicking any remaining participants.
+    4. Stamps ended_at on the VideoSession row.
+    """
+    session: models.VideoSession | None = (
+        await db.execute(
+            select(models.VideoSession).where(
+                models.VideoSession.appointment_id == appointment_id
+            )
+        )
+    ).scalar_one_or_none()
+
+    if not session:
+        # Nothing to tear down — silently succeed
+        return
+
+    room_name = session.room_name
+
+    # Stop egress first (non-blocking — errors are logged, not raised)
+    await video.stop_egress_for_room(room_name)
+
+    # Delete the room (disconnects all participants instantly)
+    await video.delete_room(room_name)
+
+    # Stamp the session end time if not already set
+    if not session.ended_at:
+        session.ended_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # GET /appointments/{id}/join — Retrieve the caller's join token
 # Returns the room name and the token that matches the current user's
 # role (Doctor or Caregiver). Patient flow via WhatsApp is TBD.
@@ -418,8 +502,15 @@ async def get_join_token(
     - CAREGIVER → join_token_caregiver
     - Patient flow (WhatsApp deep link) will be added later.
     """
+    # Fetch the most-recent session; there may be multiple rows when the doctor
+    # ends and re-starts the same appointment.
     session: models.VideoSession | None = (
-        await db.execute(select(models.VideoSession).where(models.VideoSession.appointment_id == appointment_id))
+        await db.execute(
+            select(models.VideoSession)
+            .where(models.VideoSession.appointment_id == appointment_id)
+            .order_by(models.VideoSession.started_at.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
     if not session:
         raise HTTPException(

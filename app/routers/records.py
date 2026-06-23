@@ -86,7 +86,6 @@ async def create_medical_record(
     if payload.follow_up_date:
         record.follow_up_date = payload.follow_up_date
     await db.commit()
-    await db.refresh(record)
 
     # If prescriptions were included inline, create them too
     if payload.prescriptions:
@@ -97,8 +96,9 @@ async def create_medical_record(
             patient_id=payload.patient_id,
             meds_list=[p.model_dump() for p in payload.prescriptions],
         )
-        await db.refresh(record)
 
+    # Re-fetch with eager-loaded prescriptions for the response
+    record = await crud.get_record_by_id(db, record.id) # type: ignore
     return record
 
 

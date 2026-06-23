@@ -98,6 +98,7 @@ async def register_doctor(
         access_token=access_token,
         token_type="bearer",
         user_id=db_user.id,  # type: ignore
+        hospital_id=db_user.hospital_id,  # type: ignore
         role=db_user.role.value,  # type: ignore
     )
 
@@ -172,6 +173,7 @@ async def register_caregiver(
         access_token=access_token,
         token_type="bearer",
         user_id=db_user.id, # type: ignore
+        hospital_id=db_user.hospital_id, # type: ignore
         role=db_user.role.value,
     )
 
@@ -235,6 +237,7 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         user_id=user.id, # type: ignore
+        hospital_id=user.hospital_id, # type: ignore
         role=user.role.value, # type: ignore
     )
 
@@ -311,6 +314,7 @@ async def refresh_token(
         access_token=new_access,
         token_type="bearer",
         user_id=user.id,  # type: ignore
+        hospital_id=user.hospital_id,  # type: ignore
         role=user.role.value,  # type: ignore
     )
 

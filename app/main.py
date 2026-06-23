@@ -58,6 +58,18 @@ app = FastAPI(
 # CORS — allow frontends to connect
 # ═══════════════════════════════════════════════════════════════════════
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    print(f"OMFG Validation Error: {exc.errors()}")
+    print(f"OMFG Body: {exc.body}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
+
 # 1. Define the origins that are allowed to talk to this backend
 origins = [
     "http://localhost:3000",      # Your Next.js web dashboard

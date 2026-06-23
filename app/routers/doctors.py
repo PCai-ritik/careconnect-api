@@ -61,8 +61,43 @@ async def list_doctors(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# GET /doctors/search
+# Public endpoint — search doctors by name, specialization, or location.
+# Powers the "ENT near me" / "ENT in Kamaluganja" search flow.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/search", response_model=List[schemas.DoctorResponse])
+async def search_doctors(
+    q: str = Query(..., min_length=1, description="Search query (name, specialization, or location)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search for onboarded doctors by name, specialization, or clinic address/name.
+    Public — no auth required.
+    """
+    search_term = f"%{q}%"
+    stmt = (
+        select(models.Doctor)
+        .options(joinedload(models.Doctor.availability_slots))
+        .where(
+            models.Doctor.onboarding_completed == True,
+            (
+                models.Doctor.full_name.ilike(search_term)
+                | models.Doctor.specialization.ilike(search_term)
+                | models.Doctor.clinic_name.ilike(search_term)
+                | models.Doctor.clinic_address.ilike(search_term)
+            ),
+        )
+        .order_by(models.Doctor.full_name)
+    )
+    doctors = (await db.execute(stmt)).unique().scalars().all()
+    return doctors
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # GET /doctors/profile
-# Returns the authenticated doctor's full profile + availability slots.
+# Return the current doctor's own profile (doctor only).
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -84,11 +119,59 @@ async def get_my_profile(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# GET /doctors/dashboard-stats
+# Returns aggregated stats for the doctor's dashboard home page.
+# MUST be declared before /{doctor_id} so FastAPI doesn't try to parse
+# the literal string "dashboard-stats" as a UUID path parameter.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/dashboard-stats", response_model=schemas.DashboardStatsResponse)
+async def get_dashboard_stats(
+    current_user: models.User = Depends(
+        require_role([models.RoleEnum.DOCTOR])
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregated dashboard stats for the authenticated doctor."""
+    from sqlalchemy import func as sqla_func
+
+    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
+    if not doctor:
+        return schemas.DashboardStatsResponse()
+
+    # Join appointments → video_sessions to get actual call durations
+    stmt = (
+        select(
+            sqla_func.count(models.VideoSession.id).label("total_completed"),
+            sqla_func.coalesce(
+                sqla_func.avg(models.VideoSession.actual_duration_minutes), 0
+            ).label("avg_minutes"),
+        )
+        .join(
+            models.Appointment,
+            models.VideoSession.appointment_id == models.Appointment.id,
+        )
+        .where(
+            models.Appointment.doctor_id == doctor.id,
+            models.VideoSession.actual_duration_minutes.isnot(None),
+        )
+    )
+    result = (await db.execute(stmt)).first()
+
+    return schemas.DashboardStatsResponse(
+        avg_consult_minutes=int(result.avg_minutes) if result else 0, # type: ignore
+        total_completed=result.total_completed if result else 0, # type: ignore
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # PUT /doctors/onboarding
 # Accepts all onboarding fields from the 3-step wizard:
 #   Step 1 (Verification): license_number, hospital_affiliation, bio, etc.
 #   Step 3 (Payments): consultation_fee, currency, accepted_payment_methods
 # Marks onboarding_completed = True.
+# MUST be declared before /{doctor_id} so "onboarding" is not parsed as UUID.
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -154,7 +237,6 @@ async def verify_license(
     return result
 
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # PATCH /doctors/profile
 # Update profile fields post-onboarding (e.g. phone, license, bio).
@@ -217,46 +299,79 @@ async def set_availability(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# GET /doctors/dashboard-stats
-# Returns aggregated stats for the doctor's dashboard home page.
-# avg_consult_minutes is computed from video_sessions.actual_duration_minutes.
+# GET /doctors/{doctor_id}
+# Fetch a specific doctor's profile by ID with access control.
+# Used by caregivers to view doctors for their patients.
+# MUST be declared last — after all static path segments (profile,
+# dashboard-stats, onboarding, verify-license, availability).
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@router.get("/dashboard-stats", response_model=schemas.DashboardStatsResponse)
-async def get_dashboard_stats(
-    current_user: models.User = Depends(
-        require_role([models.RoleEnum.DOCTOR])
-    ),
+@router.get("/{doctor_id}", response_model=schemas.DoctorResponse)
+async def get_doctor_profile(
+    doctor_id: uuid.UUID,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return aggregated dashboard stats for the authenticated doctor."""
-    from sqlalchemy import func as sqla_func
-
-    doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id) # type: ignore
+    """
+    Fetch a specific doctor's profile.
+    
+    DEFENSE-IN-DEPTH: Access control is enforced at TWO levels:
+    
+    1. DATABASE LEVEL (RLS Policy):
+       - Doctors can see their own profile
+       - Caregivers can see doctors with medical records for their assigned patients
+       - Admins bypass all restrictions
+       - Default: DENY
+    
+    2. APPLICATION LEVEL (This function):
+       - Validates the same logic at the FastAPI layer
+       - Provides consistent error messages
+       - Protects against edge cases where RLS might be bypassed (e.g., via raw SQL)
+       - Extra security if database connection is compromised
+    
+    This dual-layer approach ensures that even if one layer fails,
+    the other still protects against unauthorized access.
+    """
+    doctor = await crud.get_doctor_by_id(db, doctor_id=doctor_id)
     if not doctor:
-        return schemas.DashboardStatsResponse()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Doctor not found.",
+        )
 
-    # Join appointments → video_sessions to get actual call durations
-    stmt = (
-        select(
-            sqla_func.count(models.VideoSession.id).label("total_completed"),
-            sqla_func.coalesce(
-                sqla_func.avg(models.VideoSession.actual_duration_minutes), 0
-            ).label("avg_minutes"),
+    # If doctor, they can access their own
+    if current_user.role == models.RoleEnum.DOCTOR:
+        own_doctor = await crud.get_doctor_by_user_id(db, user_id=current_user.id)  # type: ignore
+        if own_doctor and own_doctor.id == doctor_id:
+            return doctor
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this doctor profile.",
         )
-        .join(
-            models.Appointment,
-            models.VideoSession.appointment_id == models.Appointment.id,
-        )
-        .where(
-            models.Appointment.doctor_id == doctor.id,
-            models.VideoSession.actual_duration_minutes.isnot(None),
-        )
-    )
-    result = (await db.execute(stmt)).first()
 
-    return schemas.DashboardStatsResponse(
-        avg_consult_minutes=int(result.avg_minutes) if result else 0, # type: ignore
-        total_completed=result.total_completed if result else 0, # type: ignore
+    # If caregiver, check access via patient records
+    if current_user.role == models.RoleEnum.CAREGIVER:
+        caregiver = await crud.get_caregiver_by_user_id(db, user_id=current_user.id)  # type: ignore
+        if not caregiver:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Caregiver profile not found.",
+            )
+        has_access = await crud.can_caregiver_access_doctor(db, caregiver.id, doctor_id)  # type: ignore
+        if not has_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this doctor profile.",
+            )
+        return doctor
+
+    # Other roles (admin, super_admin) can access
+    if current_user.role in [models.RoleEnum.ADMIN, models.RoleEnum.SUPER_ADMIN]:
+        return doctor
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access this doctor profile.",
     )
+

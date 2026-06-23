@@ -104,7 +104,33 @@ async def handle_livekit_webhook(
 
     logger.info("Received LiveKit event: %s", event.event)
 
-    # ── 3. Only process egress_ended ─────────────────────────────────
+    # ── 3. Handle participant_joined — track remote participants ─────
+    # When a non-doctor participant (caregiver/patient) joins the room,
+    # set remote_participant_joined = True on the VideoSession so the
+    # egress_ended handler knows the AI pipeline should run.
+    if event.event == "participant_joined":
+        participant = event.participant
+        room_name = event.room.name if event.room else None
+        if participant and room_name and not participant.identity.startswith("doctor-"):
+            try:
+                appointment_id = _parse_appointment_id(room_name)
+                video_session = (await db.execute(
+                    select(models.VideoSession).where(
+                        models.VideoSession.appointment_id == appointment_id
+                    )
+                )).scalar_one_or_none()
+                if video_session and not video_session.remote_participant_joined:
+                    video_session.remote_participant_joined = True
+                    await db.commit()
+                    logger.info(
+                        "Remote participant joined room %s (identity: %s)",
+                        room_name, participant.identity,
+                    )
+            except Exception as e:
+                logger.warning("Could not update remote_participant_joined: %s", e)
+        return {"status": "ok", "event": event.event}
+
+    # ── 4. Only continue for egress_ended ────────────────────────────
     if event.event != "egress_ended":
         return {"status": "ignored", "event": event.event}
 
@@ -142,6 +168,23 @@ async def handle_livekit_webhook(
     if not appointment:
         logger.error("Appointment %s not found in database", appointment_id)
         return {"status": "error", "detail": "Appointment not found"}
+
+    # ── 5b. Guard: skip AI pipeline if no remote participant ever joined ──
+    # If only the doctor was in the room (solo/aborted session), the recording
+    # contains no patient/caregiver audio. Running transcription wastes quota
+    # and causes Sarvam errors. Only proceed when remote_participant_joined=True.
+    video_session_check = (await db.execute(
+        select(models.VideoSession).where(
+            models.VideoSession.appointment_id == appointment_id
+        )
+    )).scalar_one_or_none()
+
+    if not video_session_check or not video_session_check.remote_participant_joined:
+        logger.info(
+            "Skipping AI pipeline for appointment %s — no remote participant joined",
+            appointment_id,
+        )
+        return {"status": "skipped", "reason": "no_remote_participants", "appointment_id": str(appointment_id)}
 
     # ── 6. Download audio from AWS S3 ──────────
     s3_client = boto3.client(

@@ -90,7 +90,11 @@ async def update_doctor_onboarding(db: AsyncSession, doctor_id: uuid.UUID, updat
 
 
 async def get_doctor_by_id(db: AsyncSession, doctor_id: uuid.UUID):
-    result = await db.execute(select(models.Doctor).where(models.Doctor.id == doctor_id))
+    result = await db.execute(
+        select(models.Doctor)
+        .where(models.Doctor.id == doctor_id)
+        .options(selectinload(models.Doctor.availability_slots))
+    )
     return result.scalars().first()
 
 
@@ -232,6 +236,7 @@ async def create_appointment(
     scheduled_time: datetime | None = None,
     duration_minutes: int = 30,
     appointment_type: models.AppointmentTypeEnum = models.AppointmentTypeEnum.VIDEO,
+    location_address: str | None = None,
 ):
     db_appointment = models.Appointment(
         hospital_id=hospital_id,
@@ -241,6 +246,7 @@ async def create_appointment(
         scheduled_time=scheduled_time,
         duration_minutes=duration_minutes,
         appointment_type=appointment_type,
+        location_address=location_address,
     )
     db.add(db_appointment)
     await db.commit()
@@ -307,6 +313,7 @@ async def get_records_by_patient(db: AsyncSession, patient_id: uuid.UUID):
     result = await db.execute(
         select(models.MedicalRecord)
         .where(models.MedicalRecord.patient_id == patient_id)
+        .options(selectinload(models.MedicalRecord.prescriptions))
         .order_by(models.MedicalRecord.created_at.desc())
     )
     return result.scalars().all()
@@ -314,7 +321,9 @@ async def get_records_by_patient(db: AsyncSession, patient_id: uuid.UUID):
 
 async def get_record_by_id(db: AsyncSession, record_id: uuid.UUID):
     result = await db.execute(
-        select(models.MedicalRecord).where(models.MedicalRecord.id == record_id)
+        select(models.MedicalRecord)
+        .where(models.MedicalRecord.id == record_id)
+        .options(selectinload(models.MedicalRecord.prescriptions))
     )
     return result.scalars().first()
 
@@ -387,6 +396,7 @@ async def get_available_slots(
     doctor_id: uuid.UUID,
     target_date: date_type,
     slot_duration_minutes: int = 15,
+    appointment_type: str | None = None,
 ) -> list:
     """
     Compute available time slots for a doctor on a given date.
@@ -396,17 +406,22 @@ async def get_available_slots(
     3. Remove slots that conflict with existing CONFIRMED/IN_PROGRESS appointments.
     4. Return remaining available slots as [{start_time, end_time}, ...].
     """
+    from sqlalchemy import func
+
     # Day name for lookup ("Monday", "Tuesday", etc.)
-    day_name = target_date.strftime("%A")
+    day_name = target_date.strftime("%A").upper()
 
     # 1. Get doctor's availability windows for this day
-    result = await db.execute(
-        select(models.DoctorAvailability).where(
-            models.DoctorAvailability.doctor_id == doctor_id,
-            models.DoctorAvailability.day_of_week == day_name,
-            models.DoctorAvailability.is_enabled == True,
-        )
+    stmt = select(models.DoctorAvailability).where(
+        models.DoctorAvailability.doctor_id == doctor_id,
+        func.upper(models.DoctorAvailability.day_of_week) == day_name,
+        models.DoctorAvailability.is_enabled == True,
     )
+    
+    if appointment_type:
+        stmt = stmt.where(models.DoctorAvailability.appointment_type == appointment_type)
+
+    result = await db.execute(stmt)
     availability = list(result.scalars().all())
 
     if not availability:
@@ -503,3 +518,30 @@ async def get_notes_by_appointment(db: AsyncSession, appointment_id: uuid.UUID):
         .order_by(models.DoctorNote.created_at.asc())
     )
     return result.scalars().all()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ACCESS CONTROL: Doctor Profile Access for Caregivers
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def can_caregiver_access_doctor(
+    db: AsyncSession, caregiver_id: uuid.UUID, doctor_id: uuid.UUID
+) -> bool:
+    """
+    Check if a caregiver can access a doctor's profile.
+    Returns True if the doctor has created medical records for any patient
+    assigned to this caregiver.
+    """
+    stmt = (
+        select(models.MedicalRecord)
+        .join(models.Patient, models.MedicalRecord.patient_id == models.Patient.id)
+        .where(
+            models.Patient.caregiver_id == caregiver_id,
+            models.MedicalRecord.doctor_id == doctor_id,
+        )
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first() is not None
+

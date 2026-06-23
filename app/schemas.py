@@ -144,6 +144,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user_id: uuid.UUID
+    hospital_id: uuid.UUID
     role: str
 
 
@@ -165,6 +166,7 @@ class TenantFeaturesSchema(BaseModel):
 
 class WhiteLabelConfigSchema(BaseModel):
     primary_color: str = "#4F46E5"
+    secondary_color: Optional[str] = None
     heading_font: Optional[str] = None
     body_font: Optional[str] = None
     logo_url: Optional[str] = None
@@ -263,6 +265,7 @@ class DoctorAvailabilityBase(BaseSchema):
     start_time: time
     end_time: time
     is_enabled: bool = True
+    appointment_type: AppointmentTypeEnum = AppointmentTypeEnum.VIDEO
 
 
 class DoctorAvailabilityCreate(DoctorAvailabilityBase):
@@ -278,8 +281,11 @@ class DoctorBase(BaseSchema):
     years_of_experience: Optional[str] = None
     bio: Optional[str] = None
     license_number: Optional[str] = None
+    clinic_name: Optional[str] = None
+    clinic_address: Optional[str] = None
     consultation_duration_minutes: Optional[int] = 30
-    consultation_fee: Optional[float] = None
+    video_consultation_fee: Optional[float] = None
+    in_person_consultation_fee: Optional[float] = None
     currency: str = "INR"
     accepted_payment_methods: Optional[List[str]] = None
 
@@ -288,8 +294,24 @@ class DoctorCreate(DoctorBase):
     user_id: uuid.UUID
 
 
-class DoctorUpdate(DoctorBase):
-    onboarding_completed: bool = True
+class DoctorUpdate(BaseSchema):
+    """Partial update — all fields optional; only provided fields are applied."""
+    full_name: Optional[str] = None
+    specialization: Optional[str] = None
+    phone_number: Optional[str] = None
+    avatar_url: Optional[str] = None
+    hospital_affiliation: Optional[str] = None
+    years_of_experience: Optional[str] = None
+    bio: Optional[str] = None
+    license_number: Optional[str] = None
+    clinic_name: Optional[str] = None
+    clinic_address: Optional[str] = None
+    consultation_duration_minutes: Optional[int] = None
+    video_consultation_fee: Optional[float] = None
+    in_person_consultation_fee: Optional[float] = None
+    currency: Optional[str] = None
+    accepted_payment_methods: Optional[List[str]] = None
+    onboarding_completed: Optional[bool] = None
 
 
 class DoctorResponse(DoctorBase):
@@ -369,6 +391,7 @@ class AppointmentCreate(AppointmentBase):
     patient_id: uuid.UUID
     caregiver_id: Optional[uuid.UUID] = None
     hospital_id: uuid.UUID
+    location_address: Optional[str] = None
 
 
 class AppointmentStatusUpdate(BaseModel):
@@ -383,6 +406,8 @@ class AppointmentResponse(AppointmentBase):
     caregiver_id: Optional[uuid.UUID] = None
     status: AppointmentStatusEnum
     meeting_room_id: Optional[str] = None
+    location_address: Optional[str] = None
+    check_in_status: Optional[str] = None
     created_at: datetime
 
 

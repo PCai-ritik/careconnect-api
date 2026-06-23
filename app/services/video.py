@@ -95,6 +95,55 @@ def create_join_token(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+async def stop_egress_for_room(room_name: str) -> None:
+    """
+    Stop all active egress jobs for a room (called when a call ends).
+
+    LiveKit rooms have an empty_timeout, so the room can stay open for
+    up to 10 minutes after everyone leaves and the egress would keep
+    recording silence against the quota. Calling this immediately on
+    end-call tears down the recording straight away.
+    """
+    async with api.LiveKitAPI(
+        url=settings.LIVEKIT_URL,
+        api_key=settings.LIVEKIT_API_KEY,
+        api_secret=settings.LIVEKIT_API_SECRET,
+    ) as lk:
+        from livekit.protocol import egress as egress_pb  # local import to avoid circular
+        egresses = await lk.egress.list_egress(
+            egress_pb.ListEgressRequest(room_name=room_name, active=True)
+        )
+        for eg in egresses.items:
+            try:
+                await lk.egress.stop_egress(
+                    egress_pb.StopEgressRequest(egress_id=eg.egress_id)
+                )
+                logger.info("Stopped egress %s for room %s", eg.egress_id, room_name)
+            except Exception as e:
+                logger.warning("Could not stop egress %s: %s", eg.egress_id, e)
+
+
+async def delete_room(room_name: str) -> None:
+    """
+    Delete a LiveKit room immediately, disconnecting all participants.
+
+    This bypasses the empty_timeout grace period so no further
+    compute or egress quota is consumed after the call ends.
+    """
+    async with api.LiveKitAPI(
+        url=settings.LIVEKIT_URL,
+        api_key=settings.LIVEKIT_API_KEY,
+        api_secret=settings.LIVEKIT_API_SECRET,
+    ) as lk:
+        try:
+            await lk.room.delete_room(
+                api.DeleteRoomRequest(room=room_name)
+            )
+            logger.info("Deleted LiveKit room %s", room_name)
+        except Exception as e:
+            logger.warning("Could not delete room %s: %s", room_name, e)
+
+
 async def start_room_composite_egress(room_name: str) -> str:
     """
     Start recording a LiveKit room via Room Composite Egress.

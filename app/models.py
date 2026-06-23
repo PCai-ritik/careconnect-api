@@ -156,11 +156,18 @@ class Doctor(Base):
     license_number: Mapped[str] = mapped_column(String(100), nullable=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Location details (clinic or hospital where they practice)
+    clinic_name: Mapped[str] = mapped_column(String(255), nullable=True)
+    clinic_address: Mapped[str] = mapped_column(Text, nullable=True)
+
     # Consultation settings
     consultation_duration_minutes: Mapped[int] = mapped_column(
         Integer, nullable=True
     )
-    consultation_fee: Mapped[float] = mapped_column(
+    video_consultation_fee: Mapped[float] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    in_person_consultation_fee: Mapped[float] = mapped_column(
         Numeric(10, 2), nullable=True
     )
     currency: Mapped[str] = mapped_column(String(10), default="INR")
@@ -198,6 +205,9 @@ class DoctorAvailability(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    appointment_type: Mapped[AppointmentTypeEnum] = mapped_column(
+        Enum(AppointmentTypeEnum), default=AppointmentTypeEnum.VIDEO
+    )
 
     # Relationships
     doctor = relationship("Doctor", back_populates="availability_slots")
@@ -321,6 +331,8 @@ class Appointment(Base):
     )
     reason: Mapped[str] = mapped_column(Text, nullable=True)
     meeting_room_id: Mapped[str] = mapped_column(String(255), nullable=True)
+    location_address: Mapped[str] = mapped_column(Text, nullable=True)
+    check_in_status: Mapped[str] = mapped_column(String(50), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -455,6 +467,12 @@ class VideoSession(Base):
         DateTime(timezone=True), nullable=True
     )
     actual_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=True)
+    # True once any non-doctor participant (caregiver/patient) joins the room.
+    # The AI pipeline only runs when this is True, preventing wasted
+    # transcription calls on solo-doctor or aborted sessions.
+    remote_participant_joined: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
