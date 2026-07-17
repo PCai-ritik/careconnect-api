@@ -43,8 +43,13 @@ class Settings(BaseSettings):
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
-        """Convert postgresql:// to postgresql+asyncpg:// for async driver."""
-        return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+        """Convert postgresql:// to postgresql+asyncpg:// for async driver, handling Cloud SQL."""
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
 
     model_config = SettingsConfigDict(env_file=dot_env_path)
 

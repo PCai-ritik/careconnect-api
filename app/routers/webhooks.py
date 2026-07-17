@@ -227,7 +227,7 @@ async def handle_livekit_webhook(
     # ── 7. TRANSCRIPTION — Convert audio to text ─────────────────────
     logger.info("Starting transcription for appointment %s...", appointment_id)
     try:
-        transcript = await generate_transcript(audio_bytes, vendor="sarvam")
+        transcript = await generate_transcript(audio_bytes, vendor="deepgram")
     except HTTPException:
         raise  # Let FastAPI handle it
     except Exception as e:

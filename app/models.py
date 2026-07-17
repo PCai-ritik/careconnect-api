@@ -537,7 +537,7 @@ class PostCallSummary(Base):
         ForeignKey("appointments.id"), unique=True, nullable=False
     )
 
-    diagnosis: Mapped[str] = mapped_column(String(500), nullable=True)
+    diagnosis: Mapped[str] = mapped_column(Text, nullable=True)
     symptoms: Mapped[dict] = mapped_column(
         JSONB, nullable=True
     )  # e.g. ["Cough", "Mild fever", "Sore throat"]
@@ -545,7 +545,7 @@ class PostCallSummary(Base):
     prescriptions: Mapped[dict] = mapped_column(
         JSONB, nullable=True
     )  # e.g. ["Amoxicillin 500mg (3x daily for 5 days)"]
-    follow_up: Mapped[str] = mapped_column(String(255), nullable=True)
+    follow_up: Mapped[str] = mapped_column(Text, nullable=True)
     doctor_notes: Mapped[str] = mapped_column(Text, nullable=True)
     transcript: Mapped[str] = mapped_column(Text, nullable=True)
     summary: Mapped[str] = mapped_column(Text, nullable=True)

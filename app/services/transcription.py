@@ -125,27 +125,21 @@ async def _transcribe_deepgram(audio_data: bytes) -> str:
                    "Deepgram transcription is not yet available.",
         )
 
-    from deepgram import DeepgramClient, PrerecordedOptions
-
     start = time.perf_counter()
 
     try:
-        client = DeepgramClient(settings.DEEPGRAM_API_KEY)
-
-        source = {"buffer": audio_data, "mimetype": "audio/ogg"}
-        options = PrerecordedOptions(
-            model="nova-2",
-            language="hi",
-            smart_format=True,
-        )
-
-        response = await client.listen.asyncrest.v("1").transcribe_file( # type: ignore
-            source, options
-        )
-
-        transcript = (
-            response.results.channels[0].alternatives[0].transcript
-        )
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                "https://api.deepgram.com/v1/listen?model=nova-2&language=hi&smart_format=true",
+                headers={
+                    "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
+                    "Content-Type": "audio/ogg"
+                },
+                content=audio_data,
+            )
+        response.raise_for_status()
+        result = response.json()
+        transcript = result.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
 
     except Exception as e:
         logger.error("Deepgram STT request failed: %s", e)

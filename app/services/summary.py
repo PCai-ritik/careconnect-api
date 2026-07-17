@@ -5,7 +5,7 @@ LangChain pipeline that merges a call transcript with database prescriptions
 and doctor notes, then generates a strict dual-language (English + patient's
 native language) clinical summary via Groq's high-speed inference.
 
-LLM:    ChatGroq  →  llama3-70b-8192  →  temperature=0
+LLM:    ChatGroq  →  openai/gpt-oss-120b  →  temperature=0
 Output: ClinicalSummary (Pydantic structured output)
 
 Interface:
@@ -77,9 +77,11 @@ CLINICAL_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
         "You are an expert clinical AI. Analyze the provided Call Transcript, "
-        "the Doctor's Private Notes, and the Prescribed Medications. "
-        "The Doctor's Notes and Prescriptions are absolute facts — prioritize "
-        "them over the transcript if there are discrepancies. "
+        "the Doctor's Private Notes, and the Patient's Medical History (Prescribed Medications). "
+        "IMPORTANT: The 'Prescribed Medications' list contains the patient's PAST and CHRONIC medications. "
+        "This medical history is provided ONLY as context to prevent hallucinations and clarify any ambiguous information mentioned during the call (e.g., garbled medication names). "
+        "If the call transcript can be summarized without ambiguity using just the data provided during the call, do NOT mix the contextual medical history into the call summary. "
+        "Your generated summary, diagnosis, and prescription list MUST ONLY reflect the acute issues, advice, and new medications provided during THIS specific call. "
         "Generate the summary in both English and the language the patient "
         "was speaking. Ensure the translation uses culturally appropriate "
         "medical terminology."
@@ -112,7 +114,7 @@ def _get_llm() -> ChatGroq:
         )
 
     return ChatGroq(
-        model="llama3-70b-8192",
+        model="openai/gpt-oss-120b",
         temperature=0,
         api_key=SecretStr(settings.GROQ_API_KEY),
     )
